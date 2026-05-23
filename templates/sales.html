@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+{% block title %}Sales Management{% endblock %}
+
+{% block content %}
+<style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    :root {
+        --brand: #705194;
+        --brand-dark: #553c7b;
+        --brand-light: #f3e8ff;
+        --grad: linear-gradient(135deg, #705194 0%, #553c7b 100%);
+        --surface: #ffffff;
+        --bg: #f5f4f8;
+        --border: #e8e3f0;
+        --text: #1a1a2e;
+        --muted: #7a7a9a;
+        --green: #10b981;
+        --red: #ef4444;
+        --radius: 16px;
+        --radius-sm: 10px;
+        --shadow: 0 4px 20px rgba(112,81,148,0.08);
+    }
+
+    body { background: var(--bg); }
+    .pg { max-width: 900px; margin: 0 auto; padding: 16px; }
+
+    /* PAGE HEADER */
+    .pg-header { margin-bottom: 20px; }
+    .pg-header h1 { font-size: clamp(1.3rem, 5vw, 1.8rem); font-weight: 900; color: var(--text); margin: 0; letter-spacing: -0.5px; }
+    .pg-header p { color: var(--muted); margin: 2px 0 0; font-size: 0.82rem; }
+
+    /* CARD */
+    .card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border); margin-bottom: 20px; overflow: hidden; }
+    .card-head { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; border-left: 4px solid var(--brand); }
+    .card-head .ico { background: var(--grad); color: white; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; flex-shrink: 0; }
+    .card-head strong { color: var(--text); font-size: 0.9rem; }
+
+    /* FORM BODY */
+    .form-body { padding: 20px; }
+
+    .selected-badge {
+        background: #f0fdf4; border: 1.5px solid #6ee7b7; border-radius: var(--radius-sm);
+        padding: 10px 14px; font-size: 0.82rem; color: #065f46; font-weight: 700;
+        display: none; align-items: center; gap: 8px; margin-bottom: 15px;
+    }
+    .selected-badge.show { display: flex; }
+
+    .fields-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+    @media (max-width: 450px) { .fields-row { grid-template-columns: 1fr; } }
+
+    .field { display: flex; flex-direction: column; gap: 5px; }
+    .field label { font-size: 0.6rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
+    .field input { padding: 10px 12px; background: var(--bg); border: 1.5px solid var(--border); border-radius: var(--radius-sm); font-size: 0.9rem; color: var(--text); width: 100%; }
+    .field input:focus { outline: none; border-color: var(--brand); background: white; }
+
+    .total-box {
+        background: linear-gradient(135deg, #ede9fe, var(--brand-light));
+        border: 1.5px solid #c4b5fd;
+        border-radius: var(--radius-sm);
+        padding: 12px;
+        font-size: 1.3rem;
+        font-weight: 900;
+        color: #4c1d95;
+        text-align: center;
+        display: flex; align-items: center; justify-content: center;
+    }
+
+    /* Search results */
+    .search-wrap { position: relative; }
+    .search-results {
+        position: absolute; top: 100%; left: 0; right: 0;
+        background: white; border-radius: var(--radius-sm);
+        box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+        max-height: 200px; overflow-y: auto;
+        z-index: 200; display: none; margin-top: 4px; border: 1.5px solid var(--border);
+    }
+    .s-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--bg); }
+    .s-item:hover { background: var(--brand-light); }
+    .s-item strong { display: block; font-size: 0.85rem; color: var(--text); }
+    .s-item small { font-size: 0.72rem; color: var(--muted); }
+
+    .form-footer { display: flex; gap: 10px; margin-top: 20px; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 20px; height: 46px; border-radius: var(--radius-sm); font-weight: 700; font-size: 0.88rem; cursor: pointer; border: none; transition: 0.2s; }
+    .btn-primary { background: var(--grad); color: white; flex: 1; }
+    .btn-primary:disabled { opacity: 0.45; pointer-events: none; }
+    .btn-ghost { background: var(--bg); color: var(--muted); }
+
+    /* HISTORY */
+    .log-table { width: 100%; border-collapse: collapse; }
+    .log-table th { text-align: left; padding: 10px 14px; font-size: 0.6rem; text-transform: uppercase; color: var(--muted); background: var(--bg); border-bottom: 1px solid var(--border); }
+    .log-table td { padding: 11px 14px; border-bottom: 1px solid var(--bg); font-size: 0.83rem; }
+    .log-table tr:hover td { background: #faf9ff; }
+
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: #1a1a2e; color: white; padding: 12px 22px; border-radius: 50px; font-size: 0.83rem; font-weight: 600; box-shadow: 0 8px 30px rgba(0,0,0,0.2); z-index: 9999; opacity: 0; transition: all 0.3s ease; }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+
+<div class="pg">
+    <div class="pg-header">
+        <h1>Sales</h1>
+        <p>Search for a product to record a transaction.</p>
+    </div>
+
+    <!-- TRANSACTION CARD -->
+    <div class="card">
+        <div class="card-head">
+            <div class="ico"><i class="fas fa-shopping-cart"></i></div>
+            <strong>New Transaction</strong>
+        </div>
+
+        <form method="POST" id="saleForm" autocomplete="off">
+            <div class="form-body">
+                <!-- Selected Product Badge -->
+                <div class="selected-badge" id="selectedBadge">
+                    <i class="fas fa-check-circle"></i>
+                    <span id="badgeText">Product selected</span>
+                </div>
+
+                <!-- Search Field -->
+                <div class="field search-wrap">
+                    <label>Search Product Name</label>
+                    <input type="text" id="productSearch" placeholder="Type product name or flavor..." oninput="filterProducts()">
+                    <input type="hidden" name="product_key" id="hiddenKey" required>
+                    <div id="searchResults" class="search-results"></div>
+                </div>
+
+                <!-- Qty and Total Row -->
+                <div class="fields-row">
+                    <div class="field">
+                        <label>Quantity</label>
+                        <input type="number" name="quantity" id="qtyInput" value="" min="1" oninput="calcTotal()">
+                    </div>
+                    <div class="field">
+                        <label>Total Price</label>
+                        <div class="total-box" id="totalBox">₱ 0.00</div>
+                    </div>
+                </div>
+
+                <div class="form-footer">
+                    <button type="button" class="btn btn-ghost" onclick="clearSale()">Clear</button>
+                    <button type="submit" class="btn btn-primary" id="saleBtn" disabled>
+                        <i class="fas fa-check-circle"></i> Complete Sale
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <!-- RECENT SALES -->
+    <div class="card">
+        <div class="card-head">
+            <div class="ico"><i class="fas fa-history"></i></div>
+            <strong>Recent History</strong>
+        </div>
+        <div style="overflow-x: auto;">
+            <table class="log-table">
+                <thead>
+                    <tr><th>Time</th><th>Product</th><th>Qty</th><th>Total</th></tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr>
+                        <td style="color:var(--muted); font-size:0.75rem;">{{ log.date.strftime('%H:%M') }}</td>
+                        <td>
+                            <strong>{{ log.name }}</strong><br>
+                            <small style="color:var(--brand);">{{ log.flavor }}</small>
+                        </td>
+                        <td>{{ log.qty }}</td>
+                        <td style="color:var(--green); font-weight:800;">₱{{ "{:,.2f}".format(log.qty * log.price) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const productsData = {{ products|tojson }};
+
+function showToast(msg, color = '#10b981') {
+    const t = document.getElementById('toast');
+    t.textContent = msg; t.style.borderBottom = `3px solid ${color}`;
+    t.className = 'toast show';
+    setTimeout(() => { t.className = 'toast'; }, 2500);
+}
+
+function selectItem(id, label, price, stock) {
+    document.getElementById('hiddenKey').value = id;
+    document.getElementById('productSearch').value = label;
+    document.getElementById('searchResults').style.display = 'none';
+
+    document.getElementById('badgeText').textContent = `${label} (In Stock: ${stock})`;
+    document.getElementById('selectedBadge').classList.add('show');
+
+    document.getElementById('qtyInput').dataset.price = price;
+    document.getElementById('qtyInput').max = stock;
+    document.getElementById('saleBtn').disabled = false;
+    calcTotal();
+}
+
+function filterProducts() {
+    const q = document.getElementById('productSearch').value.toLowerCase();
+    const div = document.getElementById('searchResults');
+    document.getElementById('saleBtn').disabled = true;
+
+    if (q.length < 1) { div.style.display = 'none'; return; }
+
+    const matches = Object.entries(productsData).filter(([id, p]) =>
+        p.name.toLowerCase().includes(q) || (p.flavor||'').toLowerCase().includes(q)
+    );
+
+    div.innerHTML = matches.map(([id, p]) => `
+        <div class="s-item" onclick="selectItem('${id}','${p.name} - ${p.flavor}',${p.price},${p.qty})">
+            <strong>${p.name} <span style="color:var(--brand)">${p.flavor||''}</span></strong>
+            <small>Stock: ${p.qty} | ₱${p.price.toLocaleString()}</small>
+        </div>
+    `).join('');
+    div.style.display = matches.length ? 'block' : 'none';
+}
+
+function calcTotal() {
+    const qty = parseInt(document.getElementById('qtyInput').value) || 0;
+    const price = parseFloat(document.getElementById('qtyInput').dataset.price) || 0;
+    document.getElementById('totalBox').textContent = `₱ ${(qty * price).toLocaleString(undefined,{minimumFractionDigits:2})}`;
+}
+
+function clearSale() {
+    document.getElementById('hiddenKey').value = '';
+    document.getElementById('productSearch').value = '';
+    document.getElementById('qtyInput').value = 1;
+    document.getElementById('totalBox').textContent = '₱ 0.00';
+    document.getElementById('selectedBadge').classList.remove('show');
+    document.getElementById('saleBtn').disabled = true;
+}
+
+window.addEventListener('click', e => {
+    if (!e.target.matches('#productSearch')) document.getElementById('searchResults').style.display = 'none';
+});
+</script>
+{% endblock %}

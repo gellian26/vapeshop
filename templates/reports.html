@@ -1,0 +1,293 @@
+{% extends "base.html" %}
+
+{% block content %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+<style>
+    :root {
+        --brand-navy: #162135;
+        --brand-purple: #705194;
+        --brand-green: #10b981;
+        --brand-red: #ef4444;
+        --soft-bg: #f8fafc;
+        --border-light: #e2e8f0;
+    }
+
+    /* --- PAGE UI WRAPPER --- */
+    .report-ui-wrapper { 
+        max-width: 900px; 
+        margin: 0 auto; 
+        padding: 10px; 
+    }
+
+    /* --- RESPONSIVE CONTROLS --- */
+    .report-controls {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: white;
+        padding: 12px;
+        border-radius: 12px;
+        margin-bottom: 20px;
+        border: 1px solid var(--border-light);
+        flex-wrap: wrap; 
+        gap: 12px;
+    }
+
+    .period-selector { 
+        display: flex; 
+        background: #f1f5f9; 
+        padding: 4px; 
+        border-radius: 8px; 
+        flex: 1; 
+        min-width: 200px; 
+    }
+    .period-btn { 
+        text-decoration: none; 
+        padding: 8px 12px; 
+        flex: 1; 
+        text-align: center; 
+        border-radius: 6px; 
+        font-size: 0.8rem; 
+        font-weight: 600; 
+        color: #64748b; 
+        transition: 0.2s; 
+    }
+    .period-btn.active { background: white; color: var(--brand-purple); box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+
+    .btn-group { 
+        display: flex; 
+        gap: 8px; 
+        flex: 1; 
+        justify-content: flex-end; 
+        min-width: 200px; 
+    }
+    .btn-action { 
+        flex: 1; 
+        border: none; 
+        padding: 10px; 
+        border-radius: 8px; 
+        font-weight: 700; 
+        cursor: pointer; 
+        display: flex; 
+        align-items: center; 
+        justify-content: center; 
+        gap: 6px; 
+        font-size: 0.8rem; 
+        color: white; 
+    }
+    .btn-pdf { background: #475569; }
+    .btn-img { background: var(--brand-purple); }
+
+    /* --- THE OFFICIAL REPORT DOCUMENT --- */
+    #report-capture-area {
+        background: white;
+        width: 100%;
+        margin: 0 auto;
+        padding: 5vw; /* Fluid padding based on screen width */
+        color: var(--brand-navy);
+        font-family: 'Inter', sans-serif;
+        border: 1px solid var(--border-light);
+        position: relative;
+        box-sizing: border-box;
+    }
+
+    /* CENTERED LOGO HEADER */
+    .doc-header {
+        text-align: center;
+        border-bottom: 2px solid var(--brand-navy);
+        padding-bottom: 20px;
+        margin-bottom: 30px;
+    }
+
+    .report-logo-img {
+        width: clamp(60px, 15vw, 90px); /* Responsive sizing */
+        height: clamp(60px, 15vw, 90px);
+        border-radius: 50%;
+        border: 3px solid var(--brand-purple);
+        margin: 0 auto 15px auto;
+        display: block;
+        object-fit: cover;
+    }
+
+    .brand-info h2 { margin: 0; font-size: clamp(1.1rem, 4vw, 1.6rem); font-weight: 800; letter-spacing: 1px; }
+    .brand-info p { margin: 5px 0 0; font-size: clamp(0.7rem, 2vw, 0.85rem); color: #64748b; text-transform: uppercase; }
+    .report-type-label { margin-top: 15px; font-size: clamp(0.9rem, 3vw, 1.1rem); font-weight: 700; color: var(--brand-purple); text-transform: uppercase; }
+    .report-date { font-size: 0.8rem; color: #94a3b8; margin-top: 5px; }
+
+    /* Highlights Section */
+    .report-grid { 
+        display: grid; 
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); 
+        gap: 15px; 
+        margin-bottom: 30px; 
+    }
+    .stat-card { background: var(--soft-bg); padding: 15px; border-radius: 12px; border: 1px solid var(--border-light); text-align: center;}
+    .stat-card label { display: block; font-size: 0.6rem; font-weight: 800; color: #94a3b8; text-transform: uppercase; margin-bottom: 5px; }
+    .stat-card .value { font-size: clamp(1.1rem, 4vw, 1.6rem); font-weight: 800; }
+    .stat-card .value.green { color: var(--brand-green); }
+
+    /* Movement Table */
+    .table-responsive {
+        width: 100%;
+        overflow-x: auto; 
+        -webkit-overflow-scrolling: touch;
+        margin-bottom: 25px;
+        border-radius: 8px;
+    }
+    
+    /* Swipe Hint for Mobile */
+    .swipe-hint { display: none; font-size: 0.65rem; color: #94a3b8; margin-bottom: 5px; text-align: right; font-style: italic; }
+
+    .report-table { width: 100%; border-collapse: collapse; min-width: 500px; }
+    .report-table th { background: #f1f5f9; text-align: left; padding: 10px; font-size: 0.7rem; color: #475569; border: 1px solid var(--border-light); }
+    .report-table td { padding: 10px; font-size: 0.8rem; border: 1px solid var(--border-light); }
+
+    /* Alerts */
+    .section-heading { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; margin-bottom: 12px; color: #475569; display: flex; align-items: center; gap: 8px;}
+    .section-heading::after { content: ""; flex: 1; height: 1px; background: var(--border-light); }
+    .warning-box { background: #fff1f2; border: 1px solid #ffe4e6; border-radius: 12px; padding: 12px; }
+    .warning-item { font-size: 0.75rem; font-weight: 600; color: #991b1b; display: flex; justify-content: space-between; padding: 4px 0; }
+
+    .doc-footer { margin-top: 30px; padding-top: 15px; border-top: 1px solid var(--border-light); display: flex; justify-content: space-between; font-size: 0.6rem; color: #94a3b8; flex-wrap: wrap; gap: 8px; }
+
+    /* --- MOBILE BREAKPOINT --- */
+    @media (max-width: 600px) {
+        .report-ui-wrapper { padding: 5px; }
+        .report-controls { padding: 10px; border-radius: 0; margin-left: -5px; margin-right: -5px; }
+        .swipe-hint { display: block; }
+        #report-capture-area { padding: 20px 15px; border-left: none; border-right: none; }
+        .btn-group { min-width: 100%; }
+        .period-selector { min-width: 100%; }
+    }
+
+    /* --- PRINT FIXES --- */
+    @media print {
+        nav, .sidebar, .mobile-header, .mobile-toggle, .no-print, header, .swipe-hint { display: none !important; }
+        body { background: white; margin: 0; padding: 0; }
+        .main-content { margin-left: 0 !important; width: 100% !important; padding: 0 !important; }
+        #report-capture-area { border: none; box-shadow: none; padding: 40px; width: 100%; }
+        .table-responsive { overflow: visible !important; }
+    }
+</style>
+
+<div class="report-ui-wrapper">
+    
+    <!-- Controls -->
+    <div class="report-controls no-print">
+        <div class="period-selector">
+            <a href="/reports?period=daily" class="period-btn {{ 'active' if period == 'daily' }}">Daily Audit</a>
+            <a href="/reports?period=weekly" class="period-btn {{ 'active' if period == 'weekly' }}">Weekly Audit</a>
+        </div>
+
+        <div class="btn-group">
+            <button onclick="window.print()" class="btn-action btn-pdf">
+                <i class="fas fa-file-pdf"></i> PDF
+            </button>
+            <button onclick="downloadReportImage()" class="btn-action btn-img">
+                <i class="fas fa-image"></i> IMAGE
+            </button>
+        </div>
+    </div>
+
+    <!-- The Document -->
+    <div id="report-capture-area">
+        <div class="doc-header">
+            <img src="{{ url_for('static', filename='logo.jfif') }}" class="report-logo-img" alt="Logo">
+            
+            <div class="brand-info">
+                <h2>F.L.E.X VAPE SHOP</h2>
+                <p>Inventory Management System</p>
+            </div>
+            
+            <div class="report-type-label">{{ report_label }}</div>
+            <div class="report-date">Issued: {{ date }}</div>
+        </div>
+
+        <div class="report-grid">
+            <div class="stat-card">
+                <label>Gross Revenue</label>
+                <div class="value green">₱{{ "{:,.2f}".format(revenue) }}</div>
+            </div>
+            <div class="stat-card">
+                <label>Sales Volume</label>
+                <div class="value">{{ sales_count }} Sales</div>
+            </div>
+        </div>
+
+        <div class="section-heading">Stock Movement Summary</div>
+        <div class="swipe-hint">Swipe table to see more &rarr;</div>
+        <div class="table-responsive">
+            <table class="report-table">
+                <thead>
+                    <tr>
+                        <th>Product & Flavor</th>
+                        <th style="text-align:center;">Open</th>
+                        <th style="text-align:center;">In</th>
+                        <th style="text-align:center;">Out</th>
+                        <th style="text-align:center;">End</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in movement %}
+                    <tr>
+                        <td><strong>{{ item.name }}</strong></td>
+                        <td style="text-align:center;">{{ item.open }}</td>
+                        <td style="text-align:center; color: var(--brand-green); font-weight: 700;">+{{ item.new }}</td>
+                        <td style="text-align:center; color: var(--brand-red); font-weight: 700;">-{{ item.sold }}</td>
+                        <td style="text-align:center; font-weight: 700;">{{ item.end }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if low_stocks %}
+        <div class="section-heading" style="color: var(--brand-red);">Critical Stock Warnings</div>
+        <div class="warning-box">
+            {% for cat, items in low_stocks.items() %}
+                {% for item in items %}
+                <div class="warning-item">
+                    <span>{{ item.name }} ({{ item.flavor }})</span>
+                    <span>{{ item.qty }} UNITS LEFT</span>
+                </div>
+                {% endfor %}
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="doc-footer">
+            <span>Auth: {{ now }}</span>
+            <span>F.L.E.X System &bull; Inventory Record</span>
+        </div>
+    </div>
+</div>
+
+<script>
+async function downloadReportImage() {
+    const reportArea = document.getElementById('report-capture-area');
+    const downloadBtn = document.querySelector('.btn-img');
+    
+    downloadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>...';
+    downloadBtn.disabled = true;
+
+    try {
+        const canvas = await html2canvas(reportArea, {
+            scale: 3, 
+            useCORS: true,
+            backgroundColor: "#ffffff",
+        });
+
+        const link = document.createElement('a');
+        link.href = canvas.toDataURL("image/png", 1.0);
+        link.download = `FLEX_Report_{{ date }}.png`;
+        link.click();
+    } catch (err) {
+        alert("Export failed.");
+    } finally {
+        downloadBtn.innerHTML = '<i class="fas fa-image"></i> IMAGE';
+        downloadBtn.disabled = false;
+    }
+}
+</script>
+{% endblock %}

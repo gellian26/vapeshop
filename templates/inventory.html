@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block title %}Inventory Monitor{% endblock %}
+
+{% block content %}
+<style>
+    :root {
+        --purple-grad: linear-gradient(135deg, #705194 0%, #553c7b 100%);
+    }
+
+    .inventory-container {
+        max-width: 100%;
+        margin: 0 auto;
+        padding: 10px;
+    }
+
+    /* --- TOP HEADER --- */
+    .header-flex {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 25px;
+    }
+
+    .header-title h1 { font-size: 1.8rem; font-weight: 800; color: #1a2b4b; margin: 0; }
+    .header-title p { color: #8492a6; margin: 3px 0 0 0; font-size: 0.9rem; }
+
+    .notif-bell {
+        background: white; width: 45px; height: 45px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05); color: #1a2b4b; position: relative;
+    }
+
+    /* --- LIST CARD --- */
+    .list-card {
+        background: white; border-radius: 20px; padding: 25px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.03); border: 1px solid #edf2f7;
+    }
+
+    .list-header {
+        display: flex; justify-content: space-between; align-items: center;
+        margin-bottom: 25px; flex-wrap: wrap; gap: 15px;
+    }
+
+    .search-box { position: relative; width: 100%; max-width: 350px; }
+    .search-box i { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); color: #cbd5e1; }
+    .search-box input {
+        width: 100%; padding: 12px 15px 12px 45px;
+        border: 1px solid #e2e8f0; border-radius: 50px; font-size: 0.85rem;
+        transition: 0.3s;
+    }
+    .search-box input:focus { border-color: #705194; outline: none; box-shadow: 0 0 0 3px rgba(112, 81, 148, 0.1); }
+
+    /* --- TABLE STYLING --- */
+    .table-responsive { width: 100%; overflow-x: auto; border-radius: 12px; }
+    .product-table { width: 100%; border-collapse: collapse; min-width: 1000px; }
+    .product-table th { 
+        text-align: left; padding: 15px; font-size: 0.65rem; text-transform: uppercase; 
+        color: #718096; background: #f8fafc; border-bottom: 1px solid #edf2f7; 
+    }
+    .product-table td { padding: 15px; border-bottom: 1px solid #f7fafc; vertical-align: middle; }
+
+    .img-cell { width: 48px; height: 48px; border-radius: 10px; background: #f1f5f9; overflow: hidden; }
+    .img-cell img { width: 100%; height: 100%; object-fit: cover; }
+
+    .name-cell strong { display: block; color: #1a2b4b; font-size: 0.9rem; }
+    .flavor-cell { color: #705194; font-weight: 600; font-size: 0.85rem; }
+
+    .badge-cat { background: #e0e7ff; color: #4338ca; padding: 5px 12px; border-radius: 50px; font-size: 0.65rem; font-weight: 800; text-transform: uppercase; }
+
+    /* Stock Status */
+    .stock-pill {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 6px 14px; border-radius: 50px; font-weight: 800; font-size: 0.75rem;
+    }
+    .stock-ok { background: #d1fae5; color: #065f46; }
+    .stock-low { background: #fee2e2; color: #991b1b; }
+    .stock-out { background: #f3f4f6; color: #4b5563; text-decoration: line-through; }
+
+    .dot { width: 6px; height: 6px; border-radius: 50%; }
+    .dot-ok { background: #10b981; }
+    .dot-low { background: #ef4444; }
+
+    @media (max-width: 768px) {
+        .header-flex { flex-direction: column; align-items: flex-start; gap: 15px; }
+        .list-header { flex-direction: column; align-items: stretch; }
+        .search-box { max-width: 100%; }
+    }
+</style>
+
+<div class="inventory-container">
+    
+    <!-- HEADER -->
+    <div class="header-flex">
+        <div class="header-title">
+            <h1>Inventory</h1>
+        </div>
+        <div class="notif-bell">
+            <i class="fas fa-bell"></i>
+        </div>
+    </div>
+
+    <!-- MASTER LIST CARD -->
+    <div class="list-card">
+        <div class="list-header">
+            <div style="display:flex; align-items:center; gap:12px;">
+                <div style="background: var(--purple-grad); color:white; width:35px; height:35px; border-radius:10px; display:flex; align-items:center; justify-content:center;">
+                    <i class="fas fa-boxes" style="font-size:0.8rem;"></i>
+                </div>
+                <strong style="color: #1a2b4b;">Stock Level Monitor</strong>
+            </div>
+            
+            <div class="search-box">
+                <i class="fas fa-search"></i>
+                <input type="text" id="invSearch" placeholder="Search product name or flavor..." onkeyup="filterInventory()">
+            </div>
+        </div>
+
+        <div class="table-responsive">
+            <table class="product-table" id="invTable">
+                <thead>
+                    <tr>
+                        <th>Image</th>
+                        <th>Product Name</th>
+                        <th>Flavor</th>
+                        <th>Category</th>
+                        <th>Version</th>
+                        <th>ML/MG</th>
+                        <th>Cost</th>
+                        <th>Price</th>
+                        <th>Current Stock</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key, p in products.items() %}
+                    <tr>
+                        <td>
+                            <div class="img-cell">
+                                <img src="{{ url_for('static', filename='uploads/' + p.image) if p.image else 'https://via.placeholder.com/50' }}" onerror="this.src='https://via.placeholder.com/50'">
+                            </div>
+                        </td>
+                        <td class="name-cell">
+                            <strong>{{ p.name }}</strong>
+                        </td>
+                        <td class="flavor-cell">
+                            {{ p.flavor or '-' }}
+                        </td>
+                        <td><span class="badge-cat">{{ p.type }}</span></td>
+                        <td>{{ p.version or '-' }}</td>
+                        <td>{{ p.mg or '-' }}</td>
+                        <td style="color: #64748b; font-size: 0.85rem;">₱{{ "{:,.2f}".format(p.cost) }}</td>
+                        <td style="color: #1a2b4b; font-weight: 700;">₱{{ "{:,.2f}".format(p.price) }}</td>
+                        <td>
+                            {% if p.qty <= 0 %}
+                                <span class="stock-pill stock-out">
+                                    0 PCS
+                                </span>
+                            {% elif p.qty < 5 %}
+                                <span class="stock-pill stock-low">
+                                    <div class="dot dot-low"></div>
+                                    {{ p.qty }} PCS (Low)
+                                </span>
+                            {% else %}
+                                <span class="stock-pill stock-ok">
+                                    <div class="dot dot-ok"></div>
+                                    {{ p.qty }} PCS
+                                </span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    function filterInventory() {
+        let input = document.getElementById("invSearch");
+        let filter = input.value.toUpperCase();
+        let table = document.getElementById("invTable");
+        let tr = table.getElementsByTagName("tr");
+
+        for (let i = 1; i < tr.length; i++) {
+            // Column 1 is Name, Column 2 is Flavor
+            let tdName = tr[i].getElementsByTagName("td")[1];
+            let tdFlavor = tr[i].getElementsByTagName("td")[2];
+            
+            if (tdName && tdFlavor) {
+                let nameVal = tdName.textContent || tdName.innerText;
+                let flavorVal = tdFlavor.textContent || tdFlavor.innerText;
+                
+                if (nameVal.toUpperCase().indexOf(filter) > -1 || flavorVal.toUpperCase().indexOf(filter) > -1) {
+                    tr[i].style.display = "";
+                } else {
+                    tr[i].style.display = "none";
+                }
+            }
+        }
+    }
+</script>
+{% endblock %}
