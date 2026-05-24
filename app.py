@@ -404,7 +404,7 @@ def analytics():
     hourly_raw = db.session.query(
         extract('hour', StockOutLog.date).label('hour'),
         func.sum(StockOutLog.qty).label('units')
-    ).group_by(extract('hour', StockOutLog.date)).all()
+    ).group_by('hour').all()
     hourly = {int(r.hour): int(r.units) for r in hourly_raw}
     hourly_labels = [f"{h:02d}:00" for h in range(24)]
     hourly_values = [hourly.get(h, 0) for h in range(24)]
@@ -450,7 +450,7 @@ TEMPLATES["base.html"] = """
     
     <!-- Professional Font & Icons -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     
     <!-- Barcode Scanner Library -->
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -459,35 +459,23 @@ TEMPLATES["base.html"] = """
         :root {
             --navy: #162135;
             --purple: #705194;
-            --purple-d: #553C7B;
-            --purple-l: #E8E0F3;
-            --amber: #F0A500;
-            --amber-l: #FEF3D6;
-            --green: #10B981;
-            --green-l: #D1FAE5;
-            --coral: #EF4444;
-            --coral-l: #FEE2E2;
-            --bg-body: #F8F9FC;
+            --bg-body: #f0f2f8;
             --sidebar-width: 260px;
-            --text-main: #0F1923;
+            --text-main: #1e293b;
             --text-muted: #64748b;
             --border: #e2e8f0;
             --header-height: 60px;
-            --radius: 12px;
-            --radius-lg: 20px;
-            --shadow: 0 1px 3px rgba(15,25,35,.06), 0 4px 16px rgba(15,25,35,.08);
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body { 
-            font-family: 'DM Sans', sans-serif; 
+            font-family: 'Outfit', sans-serif; 
             background: var(--bg-body); 
             color: var(--text-main);
             display: flex; 
             min-height: 100vh;
             overflow-x: hidden;
-            -webkit-font-smoothing: antialiased;
         }
 
         /* --- SCANNER OVERLAY STYLES --- */
@@ -631,7 +619,6 @@ TEMPLATES["base.html"] = """
         .nav-links a:hover { color: white; background: rgba(255,255,255,0.05); }
         .nav-links a.active { background: linear-gradient(90deg, rgba(112,81,148,0.9), rgba(85,60,123,0.7)); color: white !important; font-weight: 600; box-shadow: 0 8px 20px -8px rgba(112,81,148,0.6); border-left: 3px solid #a78bca; }
         .nav-links a i { font-size: 1.2rem; width: 25px; opacity: 0.8; }
-        .nav-badge { margin-left: auto; background: var(--amber); color: #0F1923; font-size: 0.65rem; font-weight: 800; padding: 2px 7px; border-radius: 20px; line-height: 1.4; }
 
         /* --- LOGOUT AREA --- */
         .logout-container { padding: 0 15px; margin-top: auto; }
@@ -703,7 +690,7 @@ TEMPLATES["base.html"] = """
 
         <ul class="nav-links">
             <li><a href="/" class="{{ 'active' if request.path == '/' }}"><i class="fa-solid fa-chart-pie"></i> <span>Dashboard</span></a></li>
-            <li><a href="/inventory" class="{{ 'active' if request.path == '/inventory' }}"><i class="fa-solid fa-boxes-stacked"></i> <span>Inventory</span>{% if stats is defined and stats.low_stock > 0 %}<span class="nav-badge">{{ stats.low_stock }}</span>{% endif %}</a></li>
+            <li><a href="/inventory" class="{{ 'active' if request.path == '/inventory' }}"><i class="fa-solid fa-boxes-stacked"></i> <span>Inventory</span></a></li>
             <li><a href="/sales" class="{{ 'active' if request.path == '/sales' }}"><i class="fa-solid fa-cart-shopping"></i> <span>Sales</span></a></li>
             <li><a href="/products" class="{{ 'active' if request.path == '/products' }}"><i class="fa-solid fa-tags"></i> <span>Products</span></a></li>
             <li><a href="/reports" class="{{ 'active' if request.path == '/reports' }}"><i class="fa-solid fa-file-waveform"></i> <span>Reports</span></a></li>
@@ -832,14 +819,11 @@ TEMPLATES["dashboard.html"] = """
 
 <style>
     :root {
-        --text-dark: #0F1923;
-        --text-gray: #7A8BA0;
-        --blue-main: #705194;
-        --border-color: #E9EEF5;
+        --text-dark: #1a2b4b;
+        --text-gray: #8492a6;
+        --blue-main: #4e73df;
+        --border-color: #edf2f7;
         --purple-brand: #705194;
-        --amber: #F0A500;
-        --green: #10B981;
-        --coral: #EF4444;
     }
 
     .dashboard-wrapper {
@@ -860,11 +844,9 @@ TEMPLATES["dashboard.html"] = """
 
     .dashboard-header h1 {
         margin: 0;
-        font-family: 'Playfair Display', serif;
-        font-weight: 700;
+        font-weight: 800;
         color: var(--text-dark);
-        font-size: 2rem;
-        letter-spacing: -0.5px;
+        font-size: 1.8rem;
     }
 
     .history-btn {
@@ -874,7 +856,7 @@ TEMPLATES["dashboard.html"] = """
         border-radius: 10px;
         text-decoration: none;
         font-size: 0.85rem;
-        font-weight: 600;
+        font-weight: 700;
         display: flex;
         align-items: center;
         gap: 8px;
@@ -900,27 +882,13 @@ TEMPLATES["dashboard.html"] = """
     .m-card {
         background: white;
         padding: 20px;
-        border-radius: 14px;
+        border-radius: 12px;
         border: 1px solid var(--border-color);
-        box-shadow: 0 1px 3px rgba(15,25,35,.06), 0 4px 16px rgba(15,25,35,.06);
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.02);
     }
 
-    .m-card-ico {
-        width: 38px; height: 38px;
-        border-radius: 10px;
-        display: flex; align-items: center; justify-content: center;
-        font-size: 1rem;
-    }
-    .ico-purple { background: #F3EEFF; color: var(--purple-brand); }
-    .ico-blue   { background: #EFF6FF; color: #3b82f6; }
-    .ico-amber  { background: #FFFBEB; color: var(--amber); }
-    .ico-red    { background: #FFF1F2; color: var(--coral); }
-
-    .m-card span { display: block; color: var(--text-gray); font-weight: 700; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.8px; }
-    .m-card h2 { margin: 0; font-size: 1.7rem; color: var(--text-dark); font-weight: 800; font-family: 'Playfair Display', serif; line-height: 1; }
+    .m-card span { display: block; color: var(--text-gray); font-weight: 700; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 10px; letter-spacing: 0.5px; }
+    .m-card h2 { margin: 0; font-size: 1.6rem; color: var(--blue-main); font-weight: 800; }
 
     /* --- 2. MIDDLE CHARTS SECTION --- */
     .charts-grid {
@@ -934,14 +902,13 @@ TEMPLATES["dashboard.html"] = """
     .chart-container {
         background: white;
         padding: 20px;
-        border-radius: 14px;
+        border-radius: 12px;
         border: 1px solid var(--border-color);
-        box-shadow: 0 1px 3px rgba(15,25,35,.06), 0 4px 16px rgba(15,25,35,.06);
         min-height: 350px;
         position: relative;
     }
 
-    .chart-header { font-weight: 700; color: var(--text-dark); margin-bottom: 15px; display: block; font-size: 0.95rem; }
+    .chart-header { font-weight: 800; color: var(--text-dark); margin-bottom: 15px; display: block; }
 
     /* --- 3. BOTTOM SECTION --- */
     .details-grid {
@@ -953,14 +920,13 @@ TEMPLATES["dashboard.html"] = """
     .table-card, .category-card {
         background: white;
         padding: 20px;
-        border-radius: 14px;
+        border-radius: 12px;
         border: 1px solid var(--border-color);
-        box-shadow: 0 1px 3px rgba(15,25,35,.06), 0 4px 16px rgba(15,25,35,.06);
     }
 
     .table-wrap { width: 100%; overflow-x: auto; }
     .alert-table { width: 100%; border-collapse: collapse; min-width: 400px; }
-    .alert-table th { text-align: left; color: var(--text-gray); font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; padding-bottom: 10px; border-bottom: 1px solid #f1f5f9; }
+    .alert-table th { text-align: left; color: var(--text-gray); font-size: 0.75rem; padding-bottom: 10px; border-bottom: 1px solid #f1f5f9; }
     .alert-table td { padding: 12px 0; border-bottom: 1px solid #f7fafc; font-size: 0.85rem; }
 
     .badge-cat { background: #e0e7ff; color: #4338ca; padding: 3px 8px; border-radius: 5px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; }
@@ -990,27 +956,23 @@ TEMPLATES["dashboard.html"] = """
     <!-- TOP CARDS -->
     <div class="metrics-grid">
         <div class="m-card">
-            <div class="m-card-ico ico-purple"><i class="fas fa-boxes-stacked"></i></div>
             <span>Current Stock</span>
             <h2>{{ stats.total_qty }}</h2>
         </div>
         
         <div class="m-card">
-            <div class="m-card-ico ico-blue"><i class="fas fa-receipt"></i></div>
             <!-- Dynamic Day: Resets at Midnight -->
             <span>Sales Today ({{ stats.day_name }})</span>
             <h2>{{ stats.sales_today_count }}</h2>
         </div>
         
         <div class="m-card">
-            <div class="m-card-ico ico-amber"><i class="fas fa-peso-sign"></i></div>
             <!-- Dynamic Month: Resets on the 1st -->
             <span>Revenue for {{ stats.month_name }}</span>
-            <h2>{{ stats.revenue_month }}</h2>
+            <h2 style="color: var(--purple-brand);">{{ stats.revenue_month }}</h2>
         </div>
         
         <div class="m-card">
-            <div class="m-card-ico ico-red"><i class="fas fa-triangle-exclamation"></i></div>
             <span>Low Stock Items</span>
             <h2 style="color: #ef4444;">{{ stats.low_stock }}</h2>
         </div>
@@ -1169,7 +1131,7 @@ TEMPLATES["inventory.html"] = """
         margin-bottom: 25px;
     }
 
-    .header-title h1 { font-size: 1.8rem; font-family: 'Playfair Display', serif; font-weight: 700; color: #1a2b4b; margin: 0; }
+    .header-title h1 { font-size: 1.8rem; font-weight: 800; color: #1a2b4b; margin: 0; }
     .header-title p { color: #8492a6; margin: 3px 0 0 0; font-size: 0.9rem; }
 
     .notif-bell {
@@ -1539,7 +1501,7 @@ TEMPLATES["products.html"] = """
 
     /* PAGE HEADER */
     .pg-header { margin-bottom: 25px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-    .pg-header h1 { font-size: clamp(1.3rem, 5vw, 1.8rem); font-family: 'Playfair Display', serif; font-weight: 700; color: var(--text); margin: 0; letter-spacing: -0.5px; }
+    .pg-header h1 { font-size: clamp(1.3rem, 5vw, 1.8rem); font-weight: 900; color: var(--text); margin: 0; letter-spacing: -0.5px; }
     .pg-header p { color: var(--muted); margin: 4px 0 0; font-size: 0.85rem; }
 
     /* CARD */
@@ -1820,8 +1782,7 @@ TEMPLATES["history.html"] = """
 
     .pg-title-group h1 {
         font-size: 1.875rem;
-        font-family: 'Playfair Display', serif;
-        font-weight: 700;
+        font-weight: 800;
         color: var(--brand-navy);
         letter-spacing: -0.025em;
         margin: 0;
@@ -2180,7 +2141,7 @@ TEMPLATES["reports.html"] = """
         margin-bottom: 30px;
     }
 
-    .brand-info h2 { margin: 0; font-family: 'Playfair Display', serif; font-size: clamp(1.1rem, 4vw, 1.6rem); font-weight: 700; letter-spacing: 1px; }
+    .brand-info h2 { margin: 0; font-size: clamp(1.1rem, 4vw, 1.6rem); font-weight: 800; letter-spacing: 1px; }
     .brand-info p { margin: 5px 0 0; font-size: clamp(0.7rem, 2vw, 0.85rem); color: #64748b; text-transform: uppercase; }
     .report-type-label { margin-top: 15px; font-size: clamp(0.9rem, 3vw, 1.1rem); font-weight: 700; color: var(--brand-purple); text-transform: uppercase; }
     .report-date { font-size: 0.8rem; color: #94a3b8; margin-top: 5px; }
@@ -2370,358 +2331,230 @@ TEMPLATES["sales.html"] = """
 
     :root {
         --brand: #705194;
-        --brand-d: #553C7B;
-        --brand-l: #E8E0F3;
-        --amber: #F0A500;
-        --amber-l: #FFFBEB;
-        --green: #10B981;
-        --green-l: #D1FAE5;
-        --coral: #EF4444;
-        --grad: linear-gradient(135deg, #705194 0%, #553C7B 100%);
+        --brand-dark: #553c7b;
+        --brand-light: #f3e8ff;
+        --grad: linear-gradient(135deg, #705194 0%, #553c7b 100%);
         --surface: #ffffff;
-        --bg: #F8F9FC;
-        --border: #E9EEF5;
-        --text: #0F1923;
-        --muted: #7A8BA0;
-        --radius: 14px;
+        --bg: #f5f4f8;
+        --border: #e8e3f0;
+        --text: #1a1a2e;
+        --muted: #7a7a9a;
+        --green: #10b981;
+        --red: #ef4444;
+        --radius: 16px;
         --radius-sm: 10px;
-        --shadow: 0 1px 3px rgba(15,25,35,.06), 0 4px 16px rgba(15,25,35,.08);
+        --shadow: 0 4px 20px rgba(112,81,148,0.08);
     }
 
-    .pg { max-width: 1100px; margin: 0 auto; padding: 0 0 40px; }
+    body { background: var(--bg); }
+    .pg { max-width: 900px; margin: 0 auto; padding: 16px; }
 
     /* PAGE HEADER */
     .pg-header { margin-bottom: 20px; }
-    .pg-header h1 { font-family: 'Playfair Display', serif; font-size: 2rem; font-weight: 700; color: var(--text); margin: 0; }
-    .pg-header p { color: var(--muted); margin: 4px 0 0; font-size: 0.85rem; }
+    .pg-header h1 { font-size: clamp(1.3rem, 5vw, 1.8rem); font-weight: 900; color: var(--text); margin: 0; letter-spacing: -0.5px; }
+    .pg-header p { color: var(--muted); margin: 2px 0 0; font-size: 0.82rem; }
 
-    /* POS LAYOUT: product grid left, cart right */
-    .pos-layout {
-        display: grid;
-        grid-template-columns: 1fr 280px;
-        gap: 20px;
-        align-items: start;
+    /* CARD */
+    .card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border); margin-bottom: 20px; overflow: hidden; }
+    .card-head { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; border-left: 4px solid var(--brand); }
+    .card-head .ico { background: var(--grad); color: white; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; flex-shrink: 0; }
+    .card-head strong { color: var(--text); font-size: 0.9rem; }
+
+    /* FORM BODY */
+    .form-body { padding: 20px; }
+
+    .selected-badge {
+        background: #f0fdf4; border: 1.5px solid #6ee7b7; border-radius: var(--radius-sm);
+        padding: 10px 14px; font-size: 0.82rem; color: #065f46; font-weight: 700;
+        display: none; align-items: center; gap: 8px; margin-bottom: 15px;
     }
+    .selected-badge.show { display: flex; }
 
-    /* PRODUCT GRID PANEL */
-    .panel {
-        background: var(--surface);
-        border-radius: var(--radius);
-        border: 1px solid var(--border);
-        box-shadow: var(--shadow);
-        overflow: hidden;
-    }
-    .panel-head {
-        padding: 14px 20px;
-        border-bottom: 1px solid var(--border);
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        background: #fafafa;
-        flex-wrap: wrap;
-    }
-    .panel-ico { background: var(--grad); color: white; width: 32px; height: 32px; border-radius: 9px; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; flex-shrink: 0; }
-    .panel-title { font-weight: 700; color: var(--text); font-size: 0.9rem; }
+    .fields-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+    @media (max-width: 450px) { .fields-row { grid-template-columns: 1fr; } }
 
-    /* SEARCH BAR */
-    .search-wrap { position: relative; flex: 1; min-width: 180px; }
-    .search-wrap i { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #CBD5E1; font-size: 0.85rem; }
-    .search-wrap input { width: 100%; padding: 9px 12px 9px 36px; border: 1.5px solid var(--border); border-radius: 50px; font-size: 0.82rem; background: var(--bg); color: var(--text); }
-    .search-wrap input:focus { outline: none; border-color: var(--brand); background: white; }
-
-    /* PRODUCT CARD GRID */
-    .product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; padding: 16px; }
-    .prod-card {
-        background: var(--bg);
-        border: 1.5px solid var(--border);
-        border-radius: var(--radius-sm);
-        padding: 12px;
-        cursor: pointer;
-        transition: all 0.2s;
-        position: relative;
-    }
-    .prod-card:hover { border-color: var(--brand); background: white; box-shadow: 0 4px 12px rgba(112,81,148,0.1); transform: translateY(-1px); }
-    .prod-card.selected { border-color: var(--brand); background: white; box-shadow: 0 0 0 3px rgba(112,81,148,0.15); }
-    .prod-card.out-of-stock { opacity: 0.45; pointer-events: none; }
-    .prod-card-img { width: 100%; height: 70px; border-radius: 7px; background: #e8e4f0; overflow: hidden; margin-bottom: 8px; display: flex; align-items: center; justify-content: center; }
-    .prod-card-img img { width: 100%; height: 100%; object-fit: cover; }
-    .prod-card-img i { font-size: 1.4rem; color: #b8aed6; }
-    .prod-card-name { font-size: 0.78rem; font-weight: 700; color: var(--text); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .prod-card-flavor { font-size: 0.7rem; color: var(--brand); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 6px; }
-    .prod-card-price { font-size: 0.85rem; font-weight: 800; color: var(--text); }
-    .prod-card-stock { font-size: 0.65rem; font-weight: 700; margin-top: 3px; }
-    .stock-ok { color: var(--green); }
-    .stock-low { color: var(--amber); }
-    .stock-out { color: var(--coral); }
-    .discount-badge { position: absolute; top: 8px; right: 8px; background: var(--amber); color: #0F1923; font-size: 0.6rem; font-weight: 800; padding: 2px 6px; border-radius: 5px; }
-    .selected-tick { position: absolute; top: 8px; left: 8px; width: 20px; height: 20px; border-radius: 50%; background: var(--brand); display: none; align-items: center; justify-content: center; color: white; font-size: 0.6rem; }
-    .prod-card.selected .selected-tick { display: flex; }
-
-    .no-products { padding: 40px; text-align: center; color: var(--muted); font-size: 0.85rem; }
-
-    /* CART SIDEBAR */
-    .cart-panel {
-        background: var(--surface);
-        border-radius: var(--radius);
-        border: 1px solid var(--border);
-        box-shadow: var(--shadow);
-        display: flex;
-        flex-direction: column;
-        position: sticky;
-        top: 20px;
-    }
-    .cart-head { padding: 14px 18px; border-bottom: 1px solid var(--border); background: #fafafa; }
-    .cart-head-title { font-weight: 700; color: var(--text); font-size: 0.9rem; display: flex; align-items: center; gap: 8px; }
-    .cart-badge { background: var(--brand); color: white; font-size: 0.65rem; font-weight: 800; width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; }
-
-    .cart-selected-item { padding: 14px 18px; border-bottom: 1px solid var(--border); min-height: 80px; display: flex; align-items: flex-start; gap: 10px; }
-    .cart-item-img { width: 40px; height: 40px; border-radius: 8px; background: var(--bg); overflow: hidden; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
-    .cart-item-img img { width: 100%; height: 100%; object-fit: cover; }
-    .cart-item-info { flex: 1; min-width: 0; }
-    .cart-item-name { font-size: 0.82rem; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .cart-item-meta { font-size: 0.7rem; color: var(--muted); margin-top: 2px; }
-    .cart-empty-hint { padding: 18px; text-align: center; color: var(--muted); font-size: 0.78rem; width: 100%; }
-
-    .cart-form { padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; }
     .field { display: flex; flex-direction: column; gap: 5px; }
-    .field label { font-size: 0.6rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); }
+    .field label { font-size: 0.6rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
     .field input { padding: 10px 12px; background: var(--bg); border: 1.5px solid var(--border); border-radius: var(--radius-sm); font-size: 0.9rem; color: var(--text); width: 100%; }
     .field input:focus { outline: none; border-color: var(--brand); background: white; }
 
-    .discount-field input { border-color: var(--amber); background: var(--amber-l); }
-
     .total-box {
-        background: linear-gradient(135deg, #ede9fe, var(--brand-l));
+        background: linear-gradient(135deg, #ede9fe, var(--brand-light));
         border: 1.5px solid #c4b5fd;
         border-radius: var(--radius-sm);
         padding: 12px;
-        font-size: 1.4rem;
+        font-size: 1.3rem;
         font-weight: 900;
         color: #4c1d95;
         text-align: center;
-        font-family: 'Playfair Display', serif;
+        display: flex; align-items: center; justify-content: center;
     }
 
-    .compliance-note {
-        background: var(--amber-l);
-        border: 1px solid #FCD34D;
-        border-radius: 8px;
-        padding: 8px 12px;
-        font-size: 0.7rem;
-        color: #92400E;
-        display: flex;
-        align-items: flex-start;
-        gap: 6px;
+    /* Search results */
+    .search-wrap { position: relative; }
+    .search-results {
+        position: absolute; top: 100%; left: 0; right: 0;
+        background: white; border-radius: var(--radius-sm);
+        box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+        max-height: 200px; overflow-y: auto;
+        z-index: 200; display: none; margin-top: 4px; border: 1.5px solid var(--border);
     }
-    .compliance-note i { flex-shrink: 0; margin-top: 1px; }
+    .s-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--bg); }
+    .s-item:hover { background: var(--brand-light); }
+    .s-item strong { display: block; font-size: 0.85rem; color: var(--text); }
+    .s-item small { font-size: 0.72rem; color: var(--muted); }
 
-    .btn-checkout { width: 100%; background: var(--grad); color: white; border: none; padding: 13px; border-radius: var(--radius-sm); font-weight: 700; font-size: 0.9rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: 0.2s; margin-top: 4px; }
-    .btn-checkout:disabled { opacity: 0.4; pointer-events: none; }
-    .btn-checkout:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(112,81,148,0.35); }
-    .btn-clear { width: 100%; background: var(--bg); color: var(--muted); border: 1px solid var(--border); padding: 10px; border-radius: var(--radius-sm); font-weight: 600; font-size: 0.82rem; cursor: pointer; }
+    .form-footer { display: flex; gap: 10px; margin-top: 20px; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 20px; height: 46px; border-radius: var(--radius-sm); font-weight: 700; font-size: 0.88rem; cursor: pointer; border: none; transition: 0.2s; }
+    .btn-primary { background: var(--grad); color: white; flex: 1; }
+    .btn-primary:disabled { opacity: 0.45; pointer-events: none; }
+    .btn-ghost { background: var(--bg); color: var(--muted); }
 
-    /* RECENT SALES */
+    /* HISTORY */
     .log-table { width: 100%; border-collapse: collapse; }
-    .log-table th { text-align: left; padding: 10px 14px; font-size: 0.6rem; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); background: var(--bg); border-bottom: 1px solid var(--border); }
+    .log-table th { text-align: left; padding: 10px 14px; font-size: 0.6rem; text-transform: uppercase; color: var(--muted); background: var(--bg); border-bottom: 1px solid var(--border); }
     .log-table td { padding: 11px 14px; border-bottom: 1px solid var(--bg); font-size: 0.83rem; }
     .log-table tr:hover td { background: #faf9ff; }
 
-    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: #0F1923; color: white; padding: 12px 22px; border-radius: 50px; font-size: 0.83rem; font-weight: 600; box-shadow: 0 8px 30px rgba(0,0,0,0.2); z-index: 9999; opacity: 0; transition: all 0.3s ease; }
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: #1a1a2e; color: white; padding: 12px 22px; border-radius: 50px; font-size: 0.83rem; font-weight: 600; box-shadow: 0 8px 30px rgba(0,0,0,0.2); z-index: 9999; opacity: 0; transition: all 0.3s ease; }
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-
-    @media (max-width: 768px) {
-        .pos-layout { grid-template-columns: 1fr; }
-        .cart-panel { position: static; }
-        .product-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
-    }
 </style>
 
 <div class="pg">
     <div class="pg-header">
-        <h1>Point of Sale</h1>
-        <p>Tap a product card to select it, then confirm the quantity and sale.</p>
+        <h1>Sales</h1>
+        <p>Search for a product to record a transaction.</p>
     </div>
 
-    <form method="POST" id="saleForm" autocomplete="off">
-        <input type="hidden" name="product_key" id="hiddenKey" required>
-        <input type="hidden" name="quantity" id="hiddenQty" value="1">
-        <input type="hidden" name="manual_discount" id="hiddenDiscount" value="0">
+    <!-- TRANSACTION CARD -->
+    <div class="card">
+        <div class="card-head">
+            <div class="ico"><i class="fas fa-shopping-cart"></i></div>
+            <strong>New Transaction</strong>
+        </div>
 
-        <div class="pos-layout">
-
-            <!-- PRODUCT GRID -->
-            <div>
-                <div class="panel">
-                    <div class="panel-head">
-                        <div class="panel-ico"><i class="fas fa-shopping-bag"></i></div>
-                        <div class="panel-title">Products</div>
-                        <div class="search-wrap">
-                            <i class="fas fa-search"></i>
-                            <input type="text" id="productSearch" placeholder="Search name or flavor..." oninput="filterCards()">
-                        </div>
-                        <button type="button" style="background:none;border:none;color:var(--brand);font-size:0.82rem;font-weight:600;cursor:pointer;white-space:nowrap;" onclick="startFSScanner(code => { selectByBarcode(code); })">
-                            <i class="fas fa-barcode"></i> Scan
-                        </button>
-                    </div>
-
-                    <div class="product-grid" id="productGrid">
-                        {% for key, p in products.items() %}
-                        <div class="prod-card {{ 'out-of-stock' if p.qty <= 0 }}"
-                             id="card-{{ key }}"
-                             onclick="selectProduct('{{ key }}', '{{ p.name|e }}', '{{ (p.flavor or '')|e }}', {{ p.price }}, {{ p.qty }}, {{ p.discount or 0 }}, '{{ p.image }}')"
-                             data-name="{{ p.name|lower }}" data-flavor="{{ (p.flavor or '')|lower }}">
-                            <div class="selected-tick"><i class="fas fa-check"></i></div>
-                            {% if p.discount and p.discount > 0 %}
-                            <div class="discount-badge">-{{ p.discount|int }}%</div>
-                            {% endif %}
-                            <div class="prod-card-img">
-                                <img src="{{ url_for('static', filename='uploads/' + p.image) if p.image else '' }}"
-                                     onerror="this.style.display='none';this.nextElementSibling.style.display='block'"
-                                     style="display:block;">
-                                <i class="fas fa-box" style="display:none;"></i>
-                            </div>
-                            <div class="prod-card-name">{{ p.name }}</div>
-                            <div class="prod-card-flavor">{{ p.flavor or '—' }}</div>
-                            {% set effective_price = p.price * (1 - (p.discount or 0) / 100) %}
-                            <div class="prod-card-price">₱{{ "{:,.2f}".format(effective_price) }}</div>
-                            <div class="prod-card-stock {{ 'stock-ok' if p.qty >= 5 else 'stock-low' if p.qty > 0 else 'stock-out' }}">
-                                {{ p.qty }} in stock
-                            </div>
-                        </div>
-                        {% else %}
-                        <div class="no-products" style="grid-column:1/-1;">No products found. <a href="/products">Add products</a> first.</div>
-                        {% endfor %}
-                    </div>
+        <form method="POST" id="saleForm" autocomplete="off">
+            <div class="form-body">
+                <!-- Selected Product Badge -->
+                <div class="selected-badge" id="selectedBadge">
+                    <i class="fas fa-check-circle"></i>
+                    <span id="badgeText">Product selected</span>
                 </div>
 
-                <!-- RECENT SALES -->
-                <div class="panel" style="margin-top:20px;">
-                    <div class="panel-head">
-                        <div class="panel-ico"><i class="fas fa-history"></i></div>
-                        <div class="panel-title">Recent Sales</div>
-                    </div>
-                    <div style="overflow-x:auto;">
-                        <table class="log-table">
-                            <thead>
-                                <tr><th>Time</th><th>Product</th><th>Qty</th><th>Total</th></tr>
-                            </thead>
-                            <tbody>
-                                {% for log in logs %}
-                                <tr>
-                                    <td style="color:var(--muted);font-size:0.75rem;">{{ log.date.strftime('%H:%M') }}</td>
-                                    <td>
-                                        <strong>{{ log.name }}</strong><br>
-                                        <small style="color:var(--brand);">{{ log.flavor }}</small>
-                                    </td>
-                                    <td>{{ log.qty }}</td>
-                                    <td style="color:var(--green);font-weight:800;">₱{{ "{:,.2f}".format(log.qty * log.price) }}</td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- CART SIDEBAR -->
-            <div class="cart-panel">
-                <div class="cart-head">
-                    <div class="cart-head-title">
-                        <i class="fas fa-shopping-cart" style="color:var(--brand);"></i>
-                        Transaction
-                        <span class="cart-badge" id="cartBadge" style="display:none;">1</span>
-                    </div>
+                <!-- Search Field -->
+                <div class="field search-wrap">
+                    <label>Search Product Name</label>
+                    <input type="text" id="productSearch" placeholder="Type product name or flavor..." oninput="filterProducts()">
+                    <input type="hidden" name="product_key" id="hiddenKey" required>
+                    <div id="searchResults" class="search-results"></div>
                 </div>
 
-                <!-- Selected product display -->
-                <div class="cart-selected-item" id="cartSelectedArea">
-                    <div class="cart-empty-hint">
-                        <i class="fas fa-hand-pointer" style="font-size:1.4rem;color:var(--border);display:block;margin-bottom:8px;"></i>
-                        Tap a product card to begin
-                    </div>
-                </div>
-
-                <!-- Form fields -->
-                <div class="cart-form" id="cartForm" style="display:none;">
+                <!-- Qty, Discount, and Total Row -->
+                <div class="fields-row">
                     <div class="field">
                         <label>Quantity</label>
-                        <input type="number" id="qtyInput" value="1" min="1" oninput="calcTotal()">
+                        <input type="number" name="quantity" id="qtyInput" value="" min="1" oninput="calcTotal()">
                     </div>
-                    <div class="field discount-field">
-                        <label><i class="fas fa-tag" style="color:var(--amber);"></i> Additional Discount %</label>
-                        <input type="number" id="manualDiscount" value="0" min="0" max="100" step="0.01" oninput="calcTotal()">
+                    <div class="field">
+                        <label>Discount % <span style="font-size:0.72rem;color:var(--muted);font-weight:400;">(additional)</span></label>
+                        <input type="number" name="manual_discount" id="manualDiscount" value="0" min="0" max="100" step="0.01" oninput="calcTotal()" style="border: 1.5px solid #f59e0b; background: #fffbeb;">
                     </div>
-                    <div class="total-box" id="totalBox">₱ 0.00</div>
-
-                    <div class="compliance-note">
-                        <i class="fas fa-shield-halved"></i>
-                        <span>Confirm customer is of legal age before completing sale.</span>
+                    <div class="field">
+                        <label>Total Price</label>
+                        <div class="total-box" id="totalBox">₱ 0.00</div>
                     </div>
-
-                    <button type="submit" class="btn-checkout" id="checkoutBtn" disabled>
-                        <i class="fas fa-check-circle"></i> Record Sale
-                    </button>
-                    <button type="button" class="btn-clear" onclick="clearSale()">Clear</button>
                 </div>
 
-                <div id="cartPlaceholder" style="padding:18px;text-align:center;color:var(--muted);font-size:0.75rem;border-top:1px solid var(--border);margin-top:auto;">
-                    No item selected
+                <div class="form-footer">
+                    <button type="button" class="btn btn-ghost" onclick="clearSale()">Clear</button>
+                    <button type="submit" class="btn btn-primary" id="saleBtn" disabled>
+                        <i class="fas fa-check-circle"></i> Complete Sale
+                    </button>
                 </div>
             </div>
+        </form>
+    </div>
 
+    <!-- RECENT SALES -->
+    <div class="card">
+        <div class="card-head">
+            <div class="ico"><i class="fas fa-history"></i></div>
+            <strong>Recent History</strong>
         </div>
-    </form>
+        <div style="overflow-x: auto;">
+            <table class="log-table">
+                <thead>
+                    <tr><th>Time</th><th>Product</th><th>Qty</th><th>Total</th></tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr>
+                        <td style="color:var(--muted); font-size:0.75rem;">{{ log.date.strftime('%H:%M') }}</td>
+                        <td>
+                            <strong>{{ log.name }}</strong><br>
+                            <small style="color:var(--brand);">{{ log.flavor }}</small>
+                        </td>
+                        <td>{{ log.qty }}</td>
+                        <td style="color:var(--green); font-weight:800;">₱{{ "{:,.2f}".format(log.qty * log.price) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
 </div>
 
 <div class="toast" id="toast"></div>
 
 <script>
 const productsData = {{ products|tojson }};
-let selectedKey = null;
 
-function selectProduct(key, name, flavor, price, stock, discount, image) {
-    // Deselect previous
-    if (selectedKey) {
-        const prev = document.getElementById('card-' + selectedKey);
-        if (prev) prev.classList.remove('selected');
-    }
+function showToast(msg, color = '#10b981') {
+    const t = document.getElementById('toast');
+    t.textContent = msg; t.style.borderBottom = `3px solid ${color}`;
+    t.className = 'toast show';
+    setTimeout(() => { t.className = 'toast'; }, 2500);
+}
 
-    selectedKey = key;
-    document.getElementById('card-' + key).classList.add('selected');
-    document.getElementById('hiddenKey').value = key;
-    document.getElementById('cartBadge').style.display = 'flex';
-
-    // Show product in cart
+function selectItem(id, label, price, stock, discount) {
     const productDiscount = discount || 0;
-    const effectivePrice = price * (1 - productDiscount / 100);
-    const mgField = productsData[key]?.mg || '';
+    const finalPrice = price * (1 - productDiscount / 100);
+    document.getElementById('hiddenKey').value = id;
+    document.getElementById('productSearch').value = label;
+    document.getElementById('searchResults').style.display = 'none';
 
-    const cartArea = document.getElementById('cartSelectedArea');
-    cartArea.innerHTML = `
-        <div class="cart-item-img">
-            <img src="/static/uploads/${image}" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" style="display:block;">
-            <i class="fas fa-box" style="display:none;color:#b8aed6;"></i>
-        </div>
-        <div class="cart-item-info">
-            <div class="cart-item-name">${name}</div>
-            <div class="cart-item-meta">${flavor}${mgField ? ' · ' + mgField : ''}</div>
-            <div style="font-size:0.78rem;font-weight:700;color:var(--brand);margin-top:4px;">
-                ₱${effectivePrice.toLocaleString(undefined, {minimumFractionDigits:2})}
-                ${productDiscount > 0 ? '<span style="color:var(--amber);font-size:0.7rem;"> (-' + productDiscount + '%)</span>' : ''}
-            </div>
-            <div style="font-size:0.7rem;color:var(--muted);margin-top:2px;">Stock: ${stock}</div>
-        </div>
-    `;
+    const discountNote = productDiscount > 0 ? ` — ${productDiscount}% OFF → ₱${finalPrice.toLocaleString(undefined,{minimumFractionDigits:2})}` : '';
+    document.getElementById('badgeText').textContent = `${label} (In Stock: ${stock})${discountNote}`;
+    document.getElementById('selectedBadge').classList.add('show');
 
-    document.getElementById('qtyInput').value = 1;
-    document.getElementById('qtyInput').max = stock;
+    // Store original price and product-level discount for calcTotal
     document.getElementById('qtyInput').dataset.basePrice = price;
     document.getElementById('qtyInput').dataset.productDiscount = productDiscount;
+    document.getElementById('qtyInput').max = stock;
+    document.getElementById('qtyInput').value = 1;
     document.getElementById('manualDiscount').value = 0;
-    document.getElementById('cartForm').style.display = 'flex';
-    document.getElementById('cartPlaceholder').style.display = 'none';
-    document.getElementById('checkoutBtn').disabled = false;
+    document.getElementById('saleBtn').disabled = false;
     calcTotal();
+}
+
+function filterProducts() {
+    const q = document.getElementById('productSearch').value.toLowerCase();
+    const div = document.getElementById('searchResults');
+    document.getElementById('saleBtn').disabled = true;
+
+    if (q.length < 1) { div.style.display = 'none'; return; }
+
+    const matches = Object.entries(productsData).filter(([id, p]) =>
+        p.name.toLowerCase().includes(q) || (p.flavor||'').toLowerCase().includes(q)
+    );
+
+    div.innerHTML = matches.map(([id, p]) => `
+        <div class="s-item" onclick="selectItem('${id}','${p.name} - ${p.flavor}',${p.price},${p.qty},${p.discount||0})">
+            <strong>${p.name} <span style="color:var(--brand)">${p.flavor||''}</span></strong>
+            <small>Stock: ${p.qty} | ₱${p.price.toLocaleString()}${p.discount > 0 ? ` <span style="color:#f59e0b;font-weight:700;">(-${p.discount}%)</span>` : ''}</small>
+        </div>
+    `).join('');
+    div.style.display = matches.length ? 'block' : 'none';
 }
 
 function calcTotal() {
@@ -2731,64 +2564,29 @@ function calcTotal() {
     const manualDiscount = parseFloat(document.getElementById('manualDiscount').value) || 0;
     const totalDiscount = Math.min(productDiscount + manualDiscount, 100);
     const finalPrice = basePrice * (1 - totalDiscount / 100);
-    const total = qty * finalPrice;
 
-    document.getElementById('hiddenQty').value = qty;
-    document.getElementById('hiddenDiscount').value = manualDiscount;
-
-    let label = `₱ ${total.toLocaleString(undefined, {minimumFractionDigits:2})}`;
-    document.getElementById('totalBox').textContent = label;
+    let label = `₱ ${(qty * finalPrice).toLocaleString(undefined,{minimumFractionDigits:2})}`;
     if (totalDiscount > 0) {
-        document.getElementById('totalBox').innerHTML = `₱ ${total.toLocaleString(undefined, {minimumFractionDigits:2})} <span style="font-size:0.7rem;color:var(--amber);font-weight:700;">(${totalDiscount.toFixed(1)}% off)</span>`;
+        label += ` <span style="font-size:0.75rem;color:#f59e0b;font-weight:700;">(${totalDiscount.toFixed(1)}% OFF)</span>`;
     }
+    document.getElementById('totalBox').innerHTML = label;
 }
 
 function clearSale() {
-    if (selectedKey) {
-        const card = document.getElementById('card-' + selectedKey);
-        if (card) card.classList.remove('selected');
-    }
-    selectedKey = null;
     document.getElementById('hiddenKey').value = '';
-    document.getElementById('cartForm').style.display = 'none';
-    document.getElementById('cartPlaceholder').style.display = 'block';
-    document.getElementById('cartBadge').style.display = 'none';
-    document.getElementById('cartSelectedArea').innerHTML = `
-        <div class="cart-empty-hint">
-            <i class="fas fa-hand-pointer" style="font-size:1.4rem;color:var(--border);display:block;margin-bottom:8px;"></i>
-            Tap a product card to begin
-        </div>`;
-    document.getElementById('checkoutBtn').disabled = true;
-    document.getElementById('totalBox').textContent = '₱ 0.00';
+    document.getElementById('productSearch').value = '';
+    document.getElementById('qtyInput').value = 1;
+    document.getElementById('qtyInput').dataset.basePrice = 0;
+    document.getElementById('qtyInput').dataset.productDiscount = 0;
+    document.getElementById('manualDiscount').value = 0;
+    document.getElementById('totalBox').innerHTML = '₱ 0.00';
+    document.getElementById('selectedBadge').classList.remove('show');
+    document.getElementById('saleBtn').disabled = true;
 }
 
-function filterCards() {
-    const q = document.getElementById('productSearch').value.toLowerCase();
-    document.querySelectorAll('.prod-card').forEach(card => {
-        const name = card.dataset.name || '';
-        const flavor = card.dataset.flavor || '';
-        card.style.display = (name.includes(q) || flavor.includes(q)) ? '' : 'none';
-    });
-}
-
-function selectByBarcode(code) {
-    const match = Object.entries(productsData).find(([id, p]) => p.barcode === code);
-    if (match) {
-        const [key, p] = match;
-        selectProduct(key, p.name, p.flavor || '', p.price, p.qty, p.discount || 0, p.image || '');
-        showToast('Product found: ' + p.name);
-    } else {
-        showToast('Barcode not found in products.', '#ef4444');
-    }
-}
-
-function showToast(msg, color='#10b981') {
-    const t = document.getElementById('toast');
-    t.textContent = msg;
-    t.style.borderBottom = `3px solid ${color}`;
-    t.className = 'toast show';
-    setTimeout(() => { t.className = 'toast'; }, 2500);
-}
+window.addEventListener('click', e => {
+    if (!e.target.matches('#productSearch')) document.getElementById('searchResults').style.display = 'none';
+});
 </script>
 {% endblock %}
 """
@@ -2807,7 +2605,7 @@ TEMPLATES["analytics.html"] = """
 *{box-sizing:border-box;}
 .pg{max-width:1100px;margin:0 auto;padding:0 0 60px;}
 .pg-header{margin-bottom:28px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;}
-.pg-header h1{font-family:'Playfair Display',serif;font-size:1.9rem;font-weight:700;color:var(--text);}
+.pg-header h1{font-size:1.7rem;font-weight:800;color:var(--text);}
 .pg-header p{color:var(--muted);font-size:0.9rem;margin-top:4px;}
 .period-tabs{display:flex;gap:6px;}
 .period-tab{padding:8px 16px;border-radius:50px;border:1.5px solid var(--border);background:white;font-size:0.82rem;font-weight:700;color:var(--muted);cursor:pointer;transition:.2s;}
@@ -2994,9 +2792,9 @@ TEMPLATES["analytics.html"] = """
                 <table class="rank-table">
                     <thead><tr><th>#</th><th>Product</th><th>Revenue</th><th>Units</th></tr></thead>
                     <tbody>
-                    {% for i, item in enumerate(top_by_revenue) %}
+                    {% for item in top_by_revenue %}
                     <tr>
-                        <td><span class="rank-num {{ 'gold' if i==0 else 'silver' if i==1 else 'bronze' if i==2 else '' }}">{{ i+1 }}</span></td>
+                        <td><span class="rank-num {{ 'gold' if loop.index0==0 else 'silver' if loop.index0==1 else 'bronze' if loop.index0==2 else '' }}">{{ loop.index }}</span></td>
                         <td>
                             <strong style="font-size:.83rem;">{{ item.name }}</strong>
                             {% if item.flavor %}<br><small style="color:var(--brand);">{{ item.flavor }}</small>{% endif %}
@@ -3014,9 +2812,9 @@ TEMPLATES["analytics.html"] = """
                 <table class="rank-table">
                     <thead><tr><th>#</th><th>Product</th><th>Units</th><th>Revenue</th></tr></thead>
                     <tbody>
-                    {% for i, item in enumerate(top_by_units) %}
+                    {% for item in top_by_units %}
                     <tr>
-                        <td><span class="rank-num {{ 'gold' if i==0 else 'silver' if i==1 else 'bronze' if i==2 else '' }}">{{ i+1 }}</span></td>
+                        <td><span class="rank-num {{ 'gold' if loop.index0==0 else 'silver' if loop.index0==1 else 'bronze' if loop.index0==2 else '' }}">{{ loop.index }}</span></td>
                         <td>
                             <strong style="font-size:.83rem;">{{ item.name }}</strong>
                             {% if item.flavor %}<br><small style="color:var(--brand);">{{ item.flavor }}</small>{% endif %}
@@ -3081,9 +2879,9 @@ TEMPLATES["analytics.html"] = """
                 <table class="rank-table">
                     <thead><tr><th>#</th><th>Product</th><th>Units Sold</th><th>Revenue</th><th>Profit</th><th>Margin</th><th>Rating</th></tr></thead>
                     <tbody>
-                    {% for i, p in enumerate(high_performers) %}
+                    {% for p in high_performers %}
                     <tr>
-                        <td><span class="rank-num {{ 'gold' if i==0 else 'silver' if i==1 else 'bronze' if i==2 else '' }}">{{ i+1 }}</span></td>
+                        <td><span class="rank-num {{ 'gold' if loop.index0==0 else 'silver' if loop.index0==1 else 'bronze' if loop.index0==2 else '' }}">{{ loop.index }}</span></td>
                         <td>
                             <strong style="font-size:.83rem;">{{ p.name }}</strong>
                             {% if p.flavor %}<br><small style="color:var(--brand);">{{ p.flavor }}</small>{% endif %}
