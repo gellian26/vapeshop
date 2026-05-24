@@ -3274,86 +3274,181 @@ TEMPLATES["settings.html"] = """
 <style>
     *, *::before, *::after { box-sizing: border-box; }
     :root {
-        --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
-        --orange:#f59e0b; --grad:linear-gradient(135deg,#705194,#9b6fc4);
+        --brand:#705194; --brand-light:#f3eeff; --green:#10b981;
+        --grad:linear-gradient(135deg,#705194,#9b6fc4);
         --surface:#ffffff; --bg:#f8f7ff; --border:#e8e4f0;
         --text:#1e293b; --muted:#64748b;
         --radius:16px; --radius-sm:10px;
         --shadow:0 2px 10px rgba(112,81,148,.06);
     }
-    body { background: var(--bg); }
-    .pg { max-width: 720px; margin: 0 auto; padding: 16px 16px 60px; }
-    .pg-header { margin-bottom: 24px; }
-    .pg-header h1 { font-size:1.7rem; font-weight:800; color:var(--text); margin:0; }
-    .pg-header p { color:var(--muted); margin:4px 0 0; font-size:0.88rem; }
 
-    .section-label {
-        font-size: 0.68rem; font-weight: 800; text-transform: uppercase;
-        letter-spacing: 1px; color: var(--muted); margin: 24px 0 10px;
+    body { background: var(--bg); }
+
+    /* PAGE WRAPPER */
+    .pg {
+        max-width: 680px;
+        margin: 0 auto;
+        padding: 16px 12px 80px;
     }
 
-    .card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border); margin-bottom: 16px; overflow: hidden; }
-    .card-head { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; border-left: 4px solid var(--brand); }
-    .card-head .ico { background: var(--grad); color: white; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; flex-shrink: 0; }
-    .card-head strong { font-size: 0.92rem; color: var(--text); }
-    .card-head small { font-size: 0.75rem; color: var(--muted); margin-left: auto; }
-    .card-body { padding: 20px; }
+    /* HEADER */
+    .pg-header { margin-bottom: 20px; }
+    .pg-header h1 {
+        font-size: clamp(1.3rem, 5vw, 1.7rem);
+        font-weight: 800; color: var(--text); margin: 0;
+    }
+    .pg-header p { color: var(--muted); margin: 4px 0 0; font-size: 0.85rem; }
 
-    .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
-    .field:last-of-type { margin-bottom: 0; }
-    .field label { font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
-    .field input { padding: 10px 12px; background: var(--bg); border: 1.5px solid var(--border); border-radius: var(--radius-sm); font-size: 0.9rem; color: var(--text); width: 100%; }
-    .field input:focus { outline: none; border-color: var(--brand); background: white; }
+    /* SECTION LABEL */
+    .section-label {
+        font-size: 0.65rem; font-weight: 800; text-transform: uppercase;
+        letter-spacing: 1px; color: var(--muted); margin: 22px 0 9px;
+    }
 
-    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 20px; height: 42px; border-radius: var(--radius-sm); font-weight: 700; font-size: 0.85rem; cursor: pointer; border: none; transition: .2s; }
-    .btn-primary { background: var(--grad); color: white; }
-    .btn-primary:hover { opacity: .88; }
-    .btn-danger { background: #fee2e2; color: #b91c1c; }
-    .btn-danger:hover { background: #fecaca; }
-
-    .alert { padding: 12px 16px; border-radius: var(--radius-sm); font-size: 0.85rem; font-weight: 600; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+    /* ALERT */
+    .alert {
+        padding: 12px 14px; border-radius: var(--radius-sm);
+        font-size: 0.84rem; font-weight: 600; margin-bottom: 18px;
+        display: flex; align-items: flex-start; gap: 10px; line-height: 1.4;
+    }
+    .alert i { margin-top: 2px; flex-shrink: 0; }
     .alert-success { background: #f0fdf4; border: 1.5px solid #6ee7b7; color: #065f46; }
     .alert-danger  { background: #fef2f2; border: 1.5px solid #fca5a5; color: #991b1b; }
 
-    .stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-    .stat-box { background: var(--bg); border-radius: var(--radius-sm); padding: 14px; text-align: center; border: 1px solid var(--border); }
-    .stat-box .num { font-size: 1.5rem; font-weight: 900; color: var(--brand); }
-    .stat-box .lbl { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; font-weight: 700; letter-spacing: .5px; margin-top: 2px; }
-
-    .danger-zone { border-color: #fca5a5 !important; }
-    .danger-zone .card-head { border-left-color: var(--red); }
-    .danger-zone .card-head .ico { background: linear-gradient(135deg,#ef4444,#dc2626); }
-
-    .backup-zone .card-head { border-left-color: #3b82f6; }
-    .backup-zone .card-head .ico { background: linear-gradient(135deg,#3b82f6,#6366f1); }
-
-    .restore-drop {
-        border: 2px dashed var(--border); border-radius: var(--radius-sm);
-        padding: 22px; text-align: center; cursor: pointer;
-        transition: .2s; background: var(--bg); position: relative;
+    /* STAT ROW */
+    .stat-row {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        margin-bottom: 6px;
     }
-    .restore-drop:hover, .restore-drop.dragover { border-color: var(--brand); background: var(--brand-light); }
-    .restore-drop input[type=file] { position:absolute; inset:0; opacity:0; cursor:pointer; width:100%; }
-    .restore-drop .drop-icon { font-size: 1.6rem; color: var(--muted); margin-bottom: 6px; }
-    .restore-drop .drop-label { font-size: 0.82rem; color: var(--muted); font-weight: 600; }
-    .restore-drop .drop-name { font-size: 0.82rem; color: var(--brand); font-weight: 700; margin-top: 4px; display:none; }
+    .stat-box {
+        background: var(--surface); border-radius: var(--radius-sm);
+        padding: 14px 8px; text-align: center; border: 1px solid var(--border);
+        box-shadow: var(--shadow);
+    }
+    .stat-box .num { font-size: clamp(1.2rem, 4vw, 1.5rem); font-weight: 900; color: var(--brand); }
+    .stat-box .lbl {
+        font-size: 0.6rem; color: var(--muted); text-transform: uppercase;
+        font-weight: 700; letter-spacing: .5px; margin-top: 3px;
+    }
 
+    /* CARDS */
+    .card {
+        background: var(--surface); border-radius: var(--radius);
+        box-shadow: var(--shadow); border: 1px solid var(--border);
+        margin-bottom: 14px; overflow: hidden;
+    }
+    .card-head {
+        padding: 13px 16px; border-bottom: 1px solid var(--border);
+        display: flex; align-items: center; gap: 10px;
+        border-left: 4px solid var(--brand);
+        flex-wrap: wrap;
+    }
+    .card-head .ico {
+        background: var(--grad); color: white;
+        width: 30px; height: 30px; border-radius: 8px;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.75rem; flex-shrink: 0;
+    }
+    .card-head strong { font-size: 0.88rem; color: var(--text); }
+    .card-head small  { font-size: 0.72rem; color: var(--muted); margin-left: auto; }
+    .card-body { padding: 16px; }
+
+    /* BACKUP card accent */
+    .backup-card .card-head { border-left-color: #3b82f6; }
+    .backup-card .card-head .ico { background: linear-gradient(135deg,#3b82f6,#6366f1); }
+
+    /* FIELDS */
+    .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 13px; }
+    .field label {
+        font-size: 0.65rem; font-weight: 800; text-transform: uppercase;
+        letter-spacing: .5px; color: var(--muted);
+    }
+    .field input {
+        padding: 11px 12px; background: var(--bg);
+        border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+        font-size: 0.92rem; color: var(--text); width: 100%;
+        /* bigger tap target on mobile */
+        min-height: 44px;
+    }
+    .field input:focus { outline: none; border-color: var(--brand); background: white; }
+
+    /* TWO-COL GRID — collapses on narrow screens */
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+    /* BUTTONS */
+    .btn {
+        display: inline-flex; align-items: center; justify-content: center;
+        gap: 8px; padding: 0 18px; height: 46px; border-radius: var(--radius-sm);
+        font-weight: 700; font-size: 0.88rem; cursor: pointer; border: none;
+        transition: .18s; white-space: nowrap;
+        /* full width on mobile */
+        width: 100%;
+    }
+    .btn-primary { background: var(--grad); color: white; }
+    .btn-primary:hover { opacity: .88; }
     .btn-blue { background: linear-gradient(135deg,#3b82f6,#6366f1); color: white; }
     .btn-blue:hover { opacity: .88; }
 
-    .mode-toggle { display:flex; gap:0; border: 1.5px solid var(--border); border-radius: var(--radius-sm); overflow:hidden; margin-bottom:14px; }
-    .mode-toggle label { flex:1; text-align:center; padding:9px 6px; font-size:0.78rem; font-weight:700; cursor:pointer; color:var(--muted); transition:.15s; }
-    .mode-toggle input[type=radio] { display:none; }
-    .mode-toggle input:checked + label { background: var(--grad); color:white; }
+    /* RESTORE MODE TOGGLE */
+    .mode-toggle {
+        display: flex; border: 1.5px solid var(--border);
+        border-radius: var(--radius-sm); overflow: hidden; margin-bottom: 14px;
+    }
+    .mode-toggle input[type=radio] { display: none; }
+    .mode-toggle label {
+        flex: 1; text-align: center; padding: 10px 6px;
+        font-size: 0.78rem; font-weight: 700; cursor: pointer;
+        color: var(--muted); transition: .15s; line-height: 1.3;
+    }
+    .mode-toggle input:checked + label { background: var(--grad); color: white; }
 
-    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    @media (max-width: 480px) { .two-col { grid-template-columns: 1fr; } .stat-row { grid-template-columns: 1fr 1fr; } }
+    /* FILE DROP ZONE */
+    .restore-drop {
+        border: 2px dashed var(--border); border-radius: var(--radius-sm);
+        padding: 24px 16px; text-align: center; cursor: pointer;
+        transition: .2s; background: var(--bg); position: relative;
+        margin-bottom: 14px;
+    }
+    .restore-drop:hover, .restore-drop.dragover {
+        border-color: var(--brand); background: var(--brand-light);
+    }
+    .restore-drop input[type=file] {
+        position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+    .restore-drop .drop-icon { font-size: 1.8rem; color: var(--muted); margin-bottom: 6px; }
+    .restore-drop .drop-label { font-size: 0.82rem; color: var(--muted); font-weight: 600; }
+    .restore-drop .drop-name {
+        font-size: 0.82rem; color: var(--brand); font-weight: 700; margin-top: 6px; display: none;
+    }
+
+    /* DIVIDER */
+    .divider { height: 1px; background: var(--border); margin: 18px 0; }
+
+    /* BACKUP META LINE */
+    .backup-meta {
+        font-size: 0.72rem; color: var(--muted);
+        margin-top: 10px; line-height: 1.6; text-align: center;
+    }
+
+    /* ── RESPONSIVE BREAKPOINTS ── */
+    @media (max-width: 520px) {
+        .two-col { grid-template-columns: 1fr; }
+        .stat-box .lbl { font-size: 0.55rem; }
+        .card-head small { display: none; }  /* hide subtitle on tiny screens */
+    }
+
+    @media (max-width: 380px) {
+        .stat-row { gap: 7px; }
+        .stat-box { padding: 10px 4px; }
+    }
 </style>
 
 <div class="pg">
     <div class="pg-header">
         <h1><i class="fas fa-gear" style="color:var(--brand);margin-right:8px;"></i>Settings</h1>
-        <p>Manage account credentials and system data.</p>
+        <p>Manage your account and data.</p>
     </div>
 
     {% if msg %}
@@ -3363,9 +3458,9 @@ TEMPLATES["settings.html"] = """
     </div>
     {% endif %}
 
-    <!-- DB OVERVIEW -->
+    <!-- SYSTEM OVERVIEW -->
     <div class="section-label">System Overview</div>
-    <div class="stat-row" style="margin-bottom:24px;">
+    <div class="stat-row">
         <div class="stat-box">
             <div class="num">{{ total_products }}</div>
             <div class="lbl">Products</div>
@@ -3376,43 +3471,48 @@ TEMPLATES["settings.html"] = """
         </div>
         <div class="stat-box">
             <div class="num">{{ total_stockin_logs }}</div>
-            <div class="lbl">Stock-In Logs</div>
+            <div class="lbl">Stock-In</div>
         </div>
     </div>
 
-    <!-- CHANGE PASSWORD -->
+    <!-- ACCOUNT SECURITY -->
     <div class="section-label">Account Security</div>
+
+    <!-- Change Password -->
     <div class="card">
         <div class="card-head">
             <div class="ico"><i class="fas fa-lock"></i></div>
             <strong>Change Password</strong>
-            <small>Current user: <strong>{{ admin_user }}</strong></small>
+            <small>Signed in as <strong>{{ admin_user }}</strong></small>
         </div>
         <div class="card-body">
             <form method="POST">
                 <input type="hidden" name="action" value="change_password">
                 <div class="field">
                     <label>Current Password</label>
-                    <input type="password" name="current_password" placeholder="Enter current password" required>
+                    <input type="password" name="current_password"
+                           placeholder="Enter current password" required autocomplete="current-password">
                 </div>
                 <div class="two-col">
                     <div class="field">
                         <label>New Password</label>
-                        <input type="password" name="new_password" placeholder="New password" required>
+                        <input type="password" name="new_password"
+                               placeholder="New password" required autocomplete="new-password">
                     </div>
                     <div class="field">
                         <label>Confirm New Password</label>
-                        <input type="password" name="confirm_password" placeholder="Repeat new password" required>
+                        <input type="password" name="confirm_password"
+                               placeholder="Repeat password" required autocomplete="new-password">
                     </div>
                 </div>
-                <button type="submit" class="btn btn-primary" style="margin-top:6px;">
+                <button type="submit" class="btn btn-primary">
                     <i class="fas fa-key"></i> Update Password
                 </button>
             </form>
         </div>
     </div>
 
-    <!-- CHANGE USERNAME -->
+    <!-- Change Username -->
     <div class="card">
         <div class="card-head">
             <div class="ico"><i class="fas fa-user-pen"></i></div>
@@ -3424,14 +3524,16 @@ TEMPLATES["settings.html"] = """
                 <div class="two-col">
                     <div class="field">
                         <label>New Username</label>
-                        <input type="text" name="new_username" placeholder="Enter new username" required>
+                        <input type="text" name="new_username"
+                               placeholder="Enter new username" required autocomplete="username">
                     </div>
                     <div class="field">
                         <label>Confirm with Password</label>
-                        <input type="password" name="password_for_user" placeholder="Current password" required>
+                        <input type="password" name="password_for_user"
+                               placeholder="Current password" required autocomplete="current-password">
                     </div>
                 </div>
-                <button type="submit" class="btn btn-primary" style="margin-top:6px;">
+                <button type="submit" class="btn btn-primary">
                     <i class="fas fa-user-check"></i> Update Username
                 </button>
             </form>
@@ -3440,59 +3542,65 @@ TEMPLATES["settings.html"] = """
 
     <!-- BACKUP & RESTORE -->
     <div class="section-label">Backup &amp; Restore</div>
-    <div class="card backup-zone">
+    <div class="card backup-card">
         <div class="card-head">
             <div class="ico"><i class="fas fa-database"></i></div>
             <strong>Backup &amp; Restore</strong>
-            <small>All products &amp; logs</small>
+            <small>Products &amp; all logs</small>
         </div>
         <div class="card-body">
 
-            <!-- BACKUP -->
-            <div style="margin-bottom:20px;">
-                <div style="font-size:0.78rem;color:var(--muted);margin-bottom:12px;line-height:1.5;">
-                    Download a complete snapshot of your database — all products, sales logs, and stock-in logs — as a <strong>.json</strong> file.
-                </div>
-                <a href="/settings/backup" class="btn btn-blue" style="text-decoration:none;">
-                    <i class="fas fa-download"></i> Download Backup
-                </a>
-                <span style="font-size:0.72rem;color:var(--muted);margin-left:12px;">
-                    {{ total_products }} products · {{ total_sales_logs }} sales · {{ total_stockin_logs }} stock-in records
-                </span>
+            <!-- DOWNLOAD BACKUP -->
+            <p style="font-size:0.8rem;color:var(--muted);line-height:1.5;margin:0 0 12px;">
+                Export everything — products, sales logs, and stock-in logs — as a <strong>.json</strong> file you can store safely.
+            </p>
+            <a href="/settings/backup" class="btn btn-blue" style="text-decoration:none;">
+                <i class="fas fa-download"></i> Download Backup
+            </a>
+            <div class="backup-meta">
+                {{ total_products }} products &nbsp;·&nbsp;
+                {{ total_sales_logs }} sales &nbsp;·&nbsp;
+                {{ total_stockin_logs }} stock-in records
             </div>
 
-            <div style="height:1px;background:var(--border);margin-bottom:20px;"></div>
+            <div class="divider"></div>
 
             <!-- RESTORE -->
-            <div style="font-size:0.78rem;color:var(--muted);margin-bottom:12px;line-height:1.5;">
-                Upload a <strong>.json</strong> backup file to restore data. Choose a restore mode:
-            </div>
+            <p style="font-size:0.8rem;color:var(--muted);line-height:1.5;margin:0 0 12px;">
+                Upload a <strong>.json</strong> backup file to restore data. Pick a restore mode first:
+            </p>
 
             <form method="POST" action="/settings/restore" enctype="multipart/form-data"
                   onsubmit="return confirmRestore(this);">
 
-                <!-- Mode Toggle -->
-                <div style="font-size:0.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px;">Restore Mode</div>
-                <div class="mode-toggle" style="margin-bottom:14px;">
+                <div style="font-size:0.65rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px;">
+                    Restore Mode
+                </div>
+                <div class="mode-toggle">
                     <input type="radio" name="restore_mode" id="modeMerge" value="merge" checked>
-                    <label for="modeMerge"><i class="fas fa-code-merge"></i> Merge <span style="font-weight:400;font-size:0.7rem;display:block;">Add new records only</span></label>
+                    <label for="modeMerge">
+                        <i class="fas fa-code-merge"></i> Merge
+                        <span style="font-weight:400;font-size:0.68rem;display:block;">Add new only</span>
+                    </label>
                     <input type="radio" name="restore_mode" id="modeOverwrite" value="overwrite">
-                    <label for="modeOverwrite"><i class="fas fa-rotate"></i> Overwrite <span style="font-weight:400;font-size:0.7rem;display:block;">Replace all existing data</span></label>
+                    <label for="modeOverwrite">
+                        <i class="fas fa-rotate"></i> Overwrite
+                        <span style="font-weight:400;font-size:0.68rem;display:block;">Replace all data</span>
+                    </label>
                 </div>
 
-                <!-- File Drop Zone -->
-                <div class="restore-drop" id="dropZone" style="margin-bottom:14px;">
-                    <input type="file" name="restore_file" accept=".json" id="restoreFile"
-                           onchange="updateDropLabel(this)">
+                <div class="restore-drop" id="dropZone">
+                    <input type="file" name="restore_file" accept=".json"
+                           id="restoreFile" onchange="updateDropLabel(this)">
                     <div class="drop-icon"><i class="fas fa-file-arrow-up"></i></div>
-                    <div class="drop-label">Click or drag a backup .json file here</div>
+                    <div class="drop-label">Tap to choose a backup file</div>
                     <div class="drop-name" id="dropName"></div>
                 </div>
 
-                <!-- Password -->
-                <div class="field" style="margin-bottom:14px;">
+                <div class="field">
                     <label>Password to confirm restore</label>
-                    <input type="password" name="restore_password" placeholder="Enter your password" required>
+                    <input type="password" name="restore_password"
+                           placeholder="Enter your password" required autocomplete="current-password">
                 </div>
 
                 <button type="submit" class="btn btn-blue">
@@ -3502,74 +3610,35 @@ TEMPLATES["settings.html"] = """
         </div>
     </div>
 
-    <!-- DANGER ZONE -->
-    <div class="section-label" style="color:#b91c1c;">Danger Zone</div>
-    <div class="card danger-zone">
-        <div class="card-head">
-            <div class="ico"><i class="fas fa-triangle-exclamation"></i></div>
-            <strong>Clear Logs</strong>
-            <small style="color:#b91c1c;">Irreversible actions</small>
-        </div>
-        <div class="card-body">
-            <p style="font-size:0.82rem;color:var(--muted);margin-bottom:16px;">
-                These actions permanently delete log records. Product inventory is not affected.
-            </p>
-
-            <form method="POST" style="margin-bottom:16px;" onsubmit="return confirm('Clear ALL sales logs? This cannot be undone.');">
-                <input type="hidden" name="action" value="clear_sales_log">
-                <div style="display:flex;gap:10px;align-items:flex-end;">
-                    <div class="field" style="flex:1;margin:0;">
-                        <label>Password to confirm</label>
-                        <input type="password" name="danger_password" placeholder="Enter password" required>
-                    </div>
-                    <button type="submit" class="btn btn-danger">
-                        <i class="fas fa-trash"></i> Clear Sales Log ({{ total_sales_logs }} entries)
-                    </button>
-                </div>
-            </form>
-
-            <form method="POST" onsubmit="return confirm('Clear ALL stock-in logs? This cannot be undone.');">
-                <input type="hidden" name="action" value="clear_stock_in_log">
-                <div style="display:flex;gap:10px;align-items:flex-end;">
-                    <div class="field" style="flex:1;margin:0;">
-                        <label>Password to confirm</label>
-                        <input type="password" name="danger_password2" placeholder="Enter password" required>
-                    </div>
-                    <button type="submit" class="btn btn-danger">
-                        <i class="fas fa-trash"></i> Clear Stock-In Log ({{ total_stockin_logs }} entries)
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
 </div>
 
 <script>
 function updateDropLabel(input) {
-    const name = input.files[0]?.name || '';
-    const nameEl = document.getElementById('dropName');
-    const labelEl = document.querySelector('.drop-label');
-    if (name) {
-        nameEl.textContent = '📄 ' + name;
-        nameEl.style.display = 'block';
-        labelEl.style.display = 'none';
-        document.querySelector('.drop-icon').style.display = 'none';
-    }
+    const file = input.files[0];
+    if (!file) return;
+    document.getElementById('dropName').textContent = '📄 ' + file.name;
+    document.getElementById('dropName').style.display = 'block';
+    document.querySelector('.drop-label').style.display = 'none';
+    document.querySelector('.drop-icon').style.display = 'none';
 }
 
 function confirmRestore(form) {
-    const mode = form.restore_mode.value;
     const file = document.getElementById('restoreFile').files[0];
     if (!file) { alert('Please select a backup file first.'); return false; }
+    const mode = form.restore_mode.value;
     if (mode === 'overwrite') {
-        return confirm('⚠️ OVERWRITE MODE: This will DELETE all current products and logs before restoring. Are you absolutely sure?');
+        return confirm('⚠️ OVERWRITE MODE\\n\\nThis will DELETE all current data before restoring.\\n\\nAre you absolutely sure?');
     }
-    return confirm('Restore (merge) from backup? New records will be added without removing existing data.');
+    return confirm('Restore from backup?\\n\\nNew records will be added. Existing data is kept.');
 }
 
 const dz = document.getElementById('dropZone');
-['dragover','dragenter'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.add('dragover'); }));
-['dragleave','drop'].forEach(e => dz.addEventListener(e, () => dz.classList.remove('dragover')));
+['dragover','dragenter'].forEach(ev =>
+    dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('dragover'); })
+);
+['dragleave','drop'].forEach(ev =>
+    dz.addEventListener(ev, () => dz.classList.remove('dragover'))
+);
 </script>
 {% endblock %}
 """
