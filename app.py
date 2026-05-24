@@ -1,12 +1,10 @@
 import os
 import uuid
 import time
-import json
-import io
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from jinja2 import DictLoader
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func, extract, desc
 from flask_migrate import Migrate
@@ -262,8 +260,9 @@ def sales():
         manual_discount = float(request.form.get('manual_discount') or 0)
         p = db.session.get(Product, p_id)
         if p and qty > 0 and p.qty >= qty:
-            # manual_discount is now a fixed ₱ amount per item
-            discounted_price = max(0, p.price - manual_discount)
+            product_discount = p.discount or 0
+            total_discount = min(product_discount + manual_discount, 100)
+            discounted_price = p.price * (1 - total_discount / 100)
             p.qty -= qty
             db.session.add(StockOutLog(name=p.name, flavor=p.flavor, category=p.type, qty=qty, price=discounted_price, cost=p.cost))
             db.session.commit()
@@ -300,6 +299,128 @@ def reports():
 
     return render_template('reports.html', movement=movement, revenue=sum(l.qty*l.price for l in logs_out), sales_count=len(logs_out), date=today.strftime("%B %d, %Y"), now=datetime.now().strftime("%H:%M"), period=period, report_label="Inventory Audit Report", low_stocks=low_stocks)
 
+
+@app.route('/analytics')
+def analytics():
+    now = datetime.now()
+    today = now.date()
+
+    # --- KPI SUMMARY ---
+    total_revenue = db.session.query(func.sum(StockOutLog.qty * StockOutLog.price)).scalar() or 0
+    total_units_sold = db.session.query(func.sum(StockOutLog.qty)).scalar() or 0
+    total_profit = db.session.query(func.sum(StockOutLog.qty * (StockOutLog.price - StockOutLog.cost))).scalar() or 0
+    total_transactions = StockOutLog.query.count()
+
+    # --- SALES TREND: last 30 days (daily revenue) ---
+    trend_labels, trend_revenue, trend_units = [], [], []
+    for i in range(29, -1, -1):
+        d = today - timedelta(days=i)
+        d_str = d.strftime('%Y-%m-%d')
+        rev = db.session.query(func.sum(StockOutLog.qty * StockOutLog.price)).filter(
+            func.date(StockOutLog.date) == d_str
+        ).scalar() or 0
+        units = db.session.query(func.sum(StockOutLog.qty)).filter(
+            func.date(StockOutLog.date) == d_str
+        ).scalar() or 0
+        trend_labels.append(d.strftime('%b %d'))
+        trend_revenue.append(round(float(rev), 2))
+        trend_units.append(int(units))
+
+    # --- MONTHLY REVENUE: last 6 months ---
+    monthly_labels, monthly_revenue, monthly_profit = [], [], []
+    for i in range(5, -1, -1):
+        target = now - timedelta(days=i * 30)
+        rev = db.session.query(func.sum(StockOutLog.qty * StockOutLog.price)).filter(
+            extract('month', StockOutLog.date) == target.month,
+            extract('year', StockOutLog.date) == target.year
+        ).scalar() or 0
+        profit = db.session.query(func.sum(StockOutLog.qty * (StockOutLog.price - StockOutLog.cost))).filter(
+            extract('month', StockOutLog.date) == target.month,
+            extract('year', StockOutLog.date) == target.year
+        ).scalar() or 0
+        monthly_labels.append(target.strftime("%b '%y"))
+        monthly_revenue.append(round(float(rev), 2))
+        monthly_profit.append(round(float(profit), 2))
+
+    # --- TOP ITEMS by revenue and units ---
+    top_by_revenue_raw = db.session.query(
+        StockOutLog.name, StockOutLog.flavor,
+        func.sum(StockOutLog.qty * StockOutLog.price).label('revenue'),
+        func.sum(StockOutLog.qty).label('units')
+    ).group_by(StockOutLog.name, StockOutLog.flavor).order_by(desc('revenue')).limit(10).all()
+
+    top_by_units_raw = db.session.query(
+        StockOutLog.name, StockOutLog.flavor,
+        func.sum(StockOutLog.qty).label('units'),
+        func.sum(StockOutLog.qty * StockOutLog.price).label('revenue')
+    ).group_by(StockOutLog.name, StockOutLog.flavor).order_by(desc('units')).limit(10).all()
+
+    top_by_revenue = [{'name': r.name, 'flavor': r.flavor or '', 'revenue': round(float(r.revenue), 2), 'units': int(r.units)} for r in top_by_revenue_raw]
+    top_by_units   = [{'name': r.name, 'flavor': r.flavor or '', 'units': int(r.units), 'revenue': round(float(r.revenue), 2)} for r in top_by_units_raw]
+
+    # --- CATEGORY PERFORMANCE ---
+    cat_perf_raw = db.session.query(
+        StockOutLog.category,
+        func.sum(StockOutLog.qty * StockOutLog.price).label('revenue'),
+        func.sum(StockOutLog.qty).label('units'),
+        func.sum(StockOutLog.qty * (StockOutLog.price - StockOutLog.cost)).label('profit')
+    ).group_by(StockOutLog.category).order_by(desc('revenue')).all()
+
+    total_cat_rev = sum(float(c.revenue or 0) for c in cat_perf_raw) or 1
+    cat_perf = [{
+        'name': (c.category or 'Other').capitalize(),
+        'revenue': round(float(c.revenue or 0), 2),
+        'units': int(c.units or 0),
+        'profit': round(float(c.profit or 0), 2),
+        'pct': round(float(c.revenue or 0) / total_cat_rev * 100, 1)
+    } for c in cat_perf_raw]
+
+    # --- HIGH PERFORMANCE PRODUCTS ---
+    all_products_perf = db.session.query(
+        StockOutLog.name, StockOutLog.flavor,
+        func.sum(StockOutLog.qty * StockOutLog.price).label('revenue'),
+        func.sum(StockOutLog.qty * StockOutLog.cost).label('total_cost'),
+        func.sum(StockOutLog.qty).label('units'),
+        func.sum(StockOutLog.qty * (StockOutLog.price - StockOutLog.cost)).label('profit')
+    ).group_by(StockOutLog.name, StockOutLog.flavor).having(
+        func.sum(StockOutLog.qty * StockOutLog.price) > 0
+    ).all()
+
+    performers = []
+    for r in all_products_perf:
+        rev = float(r.revenue or 0)
+        profit = float(r.profit or 0)
+        margin = (profit / rev * 100) if rev > 0 else 0
+        performers.append({
+            'name': r.name, 'flavor': r.flavor or '',
+            'revenue': round(rev, 2), 'profit': round(profit, 2),
+            'units': int(r.units or 0), 'margin': round(margin, 1)
+        })
+
+    avg_margin = (sum(p['margin'] for p in performers) / len(performers)) if performers else 0
+    high_performers = sorted([p for p in performers if p['margin'] >= avg_margin], key=lambda x: x['margin'], reverse=True)[:10]
+
+    # --- HOURLY SALES PATTERN ---
+    hourly_raw = db.session.query(
+        extract('hour', StockOutLog.date).label('hour'),
+        func.sum(StockOutLog.qty).label('units')
+    ).group_by('hour').all()
+    hourly = {int(r.hour): int(r.units) for r in hourly_raw}
+    hourly_labels = [f"{h:02d}:00" for h in range(24)]
+    hourly_values = [hourly.get(h, 0) for h in range(24)]
+
+    return render_template('analytics.html',
+        total_revenue=total_revenue, total_units_sold=total_units_sold,
+        total_profit=total_profit, total_transactions=total_transactions,
+        avg_margin=round(avg_margin, 1),
+        trend_labels=trend_labels, trend_revenue=trend_revenue, trend_units=trend_units,
+        monthly_labels=monthly_labels, monthly_revenue=monthly_revenue, monthly_profit=monthly_profit,
+        top_by_revenue=top_by_revenue, top_by_units=top_by_units,
+        cat_perf=cat_perf,
+        high_performers=high_performers,
+        hourly_labels=hourly_labels, hourly_values=hourly_values
+    )
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -314,100 +435,6 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for('login'))
-
-@app.route('/settings')
-def settings():
-    return render_template('settings.html',
-        product_count=Product.query.count(),
-        sales_count=StockOutLog.query.count(),
-        stock_in_count=StockInLog.query.count()
-    )
-
-@app.route('/settings/backup')
-def backup():
-    products = Product.query.all()
-    stock_in = StockInLog.query.all()
-    stock_out = StockOutLog.query.all()
-
-    data = {
-        "backup_date": datetime.now().isoformat(),
-        "products": [
-            {"id": p.id, "barcode": p.barcode, "name": p.name, "flavor": p.flavor,
-             "type": p.type, "version": p.version, "mg": p.mg, "qty": p.qty,
-             "cost": p.cost, "price": p.price, "discount": p.discount or 0.0,
-             "image": p.image, "date_added": p.date_added.isoformat() if p.date_added else None}
-            for p in products
-        ],
-        "stock_in_logs": [
-            {"id": l.id, "date": l.date.isoformat() if l.date else None,
-             "name": l.name, "flavor": l.flavor, "category": l.category, "qty": l.qty}
-            for l in stock_in
-        ],
-        "stock_out_logs": [
-            {"id": l.id, "date": l.date.isoformat() if l.date else None,
-             "name": l.name, "flavor": l.flavor, "category": l.category,
-             "qty": l.qty, "price": l.price, "cost": l.cost}
-            for l in stock_out
-        ]
-    }
-
-    buf = io.BytesIO(json.dumps(data, indent=2).encode('utf-8'))
-    buf.seek(0)
-    filename = f"flex_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    return send_file(buf, mimetype='application/json', as_attachment=True, download_name=filename)
-
-@app.route('/settings/restore', methods=['POST'])
-def restore():
-    f = request.files.get('backup_file')
-    if not f or not f.filename.endswith('.json'):
-        flash("Please upload a valid .json backup file.", "danger")
-        return redirect(url_for('settings'))
-    try:
-        data = json.loads(f.read().decode('utf-8'))
-
-        # Restore Products
-        if 'products' in data:
-            Product.query.delete()
-            for item in data['products']:
-                p = Product(
-                    id=item.get('id'), barcode=item.get('barcode'), name=item.get('name'),
-                    flavor=item.get('flavor'), type=item.get('type'), version=item.get('version'),
-                    mg=item.get('mg'), qty=item.get('qty', 0), cost=item.get('cost', 0.0),
-                    price=item.get('price', 0.0), discount=item.get('discount', 0.0),
-                    image=item.get('image', 'default.jpg'),
-                    date_added=datetime.fromisoformat(item['date_added']) if item.get('date_added') else datetime.now()
-                )
-                db.session.add(p)
-
-        # Restore Stock In Logs
-        if 'stock_in_logs' in data:
-            StockInLog.query.delete()
-            for item in data['stock_in_logs']:
-                l = StockInLog(
-                    id=item.get('id'), name=item.get('name'), flavor=item.get('flavor'),
-                    category=item.get('category'), qty=item.get('qty', 0),
-                    date=datetime.fromisoformat(item['date']) if item.get('date') else datetime.now()
-                )
-                db.session.add(l)
-
-        # Restore Stock Out Logs
-        if 'stock_out_logs' in data:
-            StockOutLog.query.delete()
-            for item in data['stock_out_logs']:
-                l = StockOutLog(
-                    id=item.get('id'), name=item.get('name'), flavor=item.get('flavor'),
-                    category=item.get('category'), qty=item.get('qty', 0),
-                    price=item.get('price', 0.0), cost=item.get('cost', 0.0),
-                    date=datetime.fromisoformat(item['date']) if item.get('date') else datetime.now()
-                )
-                db.session.add(l)
-
-        db.session.commit()
-        flash("Backup restored successfully! All data has been replaced.", "success")
-    except Exception as e:
-        db.session.rollback()
-        flash(f"Restore failed: {str(e)}", "danger")
-    return redirect(url_for('settings'))
 
 
 # --- 6. DEFINE EMBEDDED JINJA TEMPLATE STRINGS ---
@@ -667,7 +694,7 @@ TEMPLATES["base.html"] = """
             <li><a href="/sales" class="{{ 'active' if request.path == '/sales' }}"><i class="fa-solid fa-cart-shopping"></i> <span>Sales</span></a></li>
             <li><a href="/products" class="{{ 'active' if request.path == '/products' }}"><i class="fa-solid fa-tags"></i> <span>Products</span></a></li>
             <li><a href="/reports" class="{{ 'active' if request.path == '/reports' }}"><i class="fa-solid fa-file-waveform"></i> <span>Reports</span></a></li>
-            <li><a href="/settings" class="{{ 'active' if request.path == '/settings' }}"><i class="fa-solid fa-gear"></i> <span>Settings</span></a></li>
+            <li><a href="/analytics" class="{{ 'active' if request.path == '/analytics' }}"><i class="fa-solid fa-chart-line"></i> <span>Analytics</span></a></li>
         </ul>
 
         <div class="logout-container">
@@ -2429,8 +2456,8 @@ TEMPLATES["sales.html"] = """
                         <input type="number" name="quantity" id="qtyInput" value="" min="1" oninput="calcTotal()">
                     </div>
                     <div class="field">
-                        <label>Discount ₱ <span style="font-size:0.72rem;color:var(--muted);font-weight:400;">(per item)</span></label>
-                        <input type="number" name="manual_discount" id="manualDiscount" value="0" min="0" step="0.01" oninput="calcTotal()" style="border: 1.5px solid #f59e0b; background: #fffbeb;">
+                        <label>Discount % <span style="font-size:0.72rem;color:var(--muted);font-weight:400;">(additional)</span></label>
+                        <input type="number" name="manual_discount" id="manualDiscount" value="0" min="0" max="100" step="0.01" oninput="calcTotal()" style="border: 1.5px solid #f59e0b; background: #fffbeb;">
                     </div>
                     <div class="field">
                         <label>Total Price</label>
@@ -2490,15 +2517,19 @@ function showToast(msg, color = '#10b981') {
 }
 
 function selectItem(id, label, price, stock, discount) {
+    const productDiscount = discount || 0;
+    const finalPrice = price * (1 - productDiscount / 100);
     document.getElementById('hiddenKey').value = id;
     document.getElementById('productSearch').value = label;
     document.getElementById('searchResults').style.display = 'none';
 
-    document.getElementById('badgeText').textContent = `${label} (In Stock: ${stock})`;
+    const discountNote = productDiscount > 0 ? ` — ${productDiscount}% OFF → ₱${finalPrice.toLocaleString(undefined,{minimumFractionDigits:2})}` : '';
+    document.getElementById('badgeText').textContent = `${label} (In Stock: ${stock})${discountNote}`;
     document.getElementById('selectedBadge').classList.add('show');
 
-    // Store original price for calcTotal
+    // Store original price and product-level discount for calcTotal
     document.getElementById('qtyInput').dataset.basePrice = price;
+    document.getElementById('qtyInput').dataset.productDiscount = productDiscount;
     document.getElementById('qtyInput').max = stock;
     document.getElementById('qtyInput').value = 1;
     document.getElementById('manualDiscount').value = 0;
@@ -2529,13 +2560,14 @@ function filterProducts() {
 function calcTotal() {
     const qty = parseInt(document.getElementById('qtyInput').value) || 0;
     const basePrice = parseFloat(document.getElementById('qtyInput').dataset.basePrice) || 0;
+    const productDiscount = parseFloat(document.getElementById('qtyInput').dataset.productDiscount) || 0;
     const manualDiscount = parseFloat(document.getElementById('manualDiscount').value) || 0;
-    const finalPrice = Math.max(0, basePrice - manualDiscount);
-    const total = qty * finalPrice;
+    const totalDiscount = Math.min(productDiscount + manualDiscount, 100);
+    const finalPrice = basePrice * (1 - totalDiscount / 100);
 
-    let label = `₱ ${total.toLocaleString(undefined,{minimumFractionDigits:2})}`;
-    if (manualDiscount > 0 && basePrice > 0) {
-        label += ` <span style="font-size:0.75rem;color:#f59e0b;font-weight:700;">(-₱${manualDiscount.toLocaleString(undefined,{minimumFractionDigits:2})}/item)</span>`;
+    let label = `₱ ${(qty * finalPrice).toLocaleString(undefined,{minimumFractionDigits:2})}`;
+    if (totalDiscount > 0) {
+        label += ` <span style="font-size:0.75rem;color:#f59e0b;font-weight:700;">(${totalDiscount.toFixed(1)}% OFF)</span>`;
     }
     document.getElementById('totalBox').innerHTML = label;
 }
@@ -2545,6 +2577,7 @@ function clearSale() {
     document.getElementById('productSearch').value = '';
     document.getElementById('qtyInput').value = 1;
     document.getElementById('qtyInput').dataset.basePrice = 0;
+    document.getElementById('qtyInput').dataset.productDiscount = 0;
     document.getElementById('manualDiscount').value = 0;
     document.getElementById('totalBox').innerHTML = '₱ 0.00';
     document.getElementById('selectedBadge').classList.remove('show');
@@ -2558,136 +2591,462 @@ window.addEventListener('click', e => {
 {% endblock %}
 """
 
-TEMPLATES["settings.html"] = """
+TEMPLATES["analytics.html"] = """
 {% extends 'base.html' %}
 {% block content %}
 <style>
-    :root { --brand: #705194; --brand-light: #f3eeff; --green: #10b981; --grad: linear-gradient(135deg,#705194,#9b6fc4); --radius: 16px; --radius-sm: 10px; --border: #e8e4f0; --text: #1e293b; --muted: #64748b; --bg: #f8f7ff; }
-    .pg { max-width: 700px; margin: 0 auto; padding: 0 0 40px; }
-    .pg-header { margin-bottom: 28px; }
-    .pg-header h1 { font-size: 1.7rem; font-weight: 800; color: var(--text); }
-    .pg-header p { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
-    .settings-card { background: white; border-radius: var(--radius); border: 1.5px solid var(--border); margin-bottom: 20px; overflow: hidden; box-shadow: 0 2px 12px rgba(112,81,148,0.06); }
-    .settings-card-head { display: flex; align-items: center; gap: 14px; padding: 20px 24px; border-bottom: 1.5px solid var(--border); background: var(--bg); }
-    .settings-card-head .ico { width: 40px; height: 40px; background: var(--grad); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.1rem; flex-shrink: 0; }
-    .settings-card-head strong { font-size: 1rem; font-weight: 700; color: var(--text); display: block; }
-    .settings-card-head span { font-size: 0.8rem; color: var(--muted); }
-    .settings-card-body { padding: 24px; }
-    .settings-section { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-    .settings-desc h4 { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-    .settings-desc p { font-size: 0.82rem; color: var(--muted); line-height: 1.5; }
-    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 20px; height: 44px; border-radius: var(--radius-sm); font-weight: 700; font-size: 0.88rem; cursor: pointer; border: none; transition: 0.2s; text-decoration: none; white-space: nowrap; }
-    .btn-primary { background: var(--grad); color: white; }
-    .btn-primary:hover { opacity: 0.88; }
-    .btn-danger { background: #fff1f2; color: #e11d48; border: 1.5px solid #fecdd3; }
-    .btn-danger:hover { background: #ffe4e6; }
-    .btn-warning { background: #fffbeb; color: #b45309; border: 1.5px solid #fde68a; }
-    .btn-warning:hover { background: #fef3c7; }
-    .restore-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; padding-top: 16px; border-top: 1.5px solid var(--border); }
-    .file-input-wrap { position: relative; }
-    .file-input-wrap input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
-    .file-label { display: inline-flex; align-items: center; gap: 8px; padding: 0 16px; height: 44px; background: var(--bg); border: 1.5px dashed #c4b5d4; border-radius: var(--radius-sm); font-size: 0.85rem; color: var(--muted); font-weight: 600; cursor: pointer; transition: 0.2s; min-width: 200px; }
-    .file-label:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-light); }
-    .divider-row { height: 1px; background: var(--border); margin: 20px 0; }
-    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .info-item { background: var(--bg); border-radius: var(--radius-sm); padding: 14px 16px; }
-    .info-item label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); font-weight: 700; display: block; margin-bottom: 4px; }
-    .info-item span { font-size: 0.9rem; font-weight: 700; color: var(--text); }
-    @media(max-width:500px){ .info-grid { grid-template-columns: 1fr; } .settings-section { flex-direction: column; align-items: flex-start; } }
+:root {
+    --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
+    --orange:#f59e0b; --blue:#3b82f6;
+    --grad:linear-gradient(135deg,#705194,#9b6fc4);
+    --radius:16px; --radius-sm:10px;
+    --border:#e8e4f0; --text:#1e293b; --muted:#64748b; --bg:#f8f7ff;
+}
+*{box-sizing:border-box;}
+.pg{max-width:1100px;margin:0 auto;padding:0 0 60px;}
+.pg-header{margin-bottom:28px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;}
+.pg-header h1{font-size:1.7rem;font-weight:800;color:var(--text);}
+.pg-header p{color:var(--muted);font-size:0.9rem;margin-top:4px;}
+.period-tabs{display:flex;gap:6px;}
+.period-tab{padding:8px 16px;border-radius:50px;border:1.5px solid var(--border);background:white;font-size:0.82rem;font-weight:700;color:var(--muted);cursor:pointer;transition:.2s;}
+.period-tab.active,.period-tab:hover{background:var(--grad);color:white;border-color:transparent;}
+
+/* KPI CARDS */
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px;}
+.kpi-card{background:white;border-radius:var(--radius);border:1.5px solid var(--border);padding:20px 22px;box-shadow:0 2px 10px rgba(112,81,148,.05);}
+.kpi-card .kpi-label{font-size:0.72rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700;margin-bottom:8px;}
+.kpi-card .kpi-val{font-size:1.65rem;font-weight:800;color:var(--text);line-height:1;}
+.kpi-card .kpi-sub{font-size:0.78rem;color:var(--muted);margin-top:6px;}
+.kpi-card .kpi-ico{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1rem;margin-bottom:12px;}
+.kpi-ico.purple{background:#f3eeff;color:var(--brand);}
+.kpi-ico.green{background:#ecfdf5;color:var(--green);}
+.kpi-ico.orange{background:#fffbeb;color:var(--orange);}
+.kpi-ico.blue{background:#eff6ff;color:var(--blue);}
+
+/* CHART CARDS */
+.chart-row{display:grid;gap:20px;margin-bottom:20px;}
+.chart-row.cols-2{grid-template-columns:1fr 1fr;}
+.chart-row.cols-3{grid-template-columns:2fr 1fr;}
+.chart-row.cols-1{grid-template-columns:1fr;}
+.chart-card{background:white;border-radius:var(--radius);border:1.5px solid var(--border);box-shadow:0 2px 10px rgba(112,81,148,.05);overflow:hidden;}
+.chart-head{display:flex;align-items:center;justify-content:space-between;padding:18px 22px 0;gap:10px;}
+.chart-head-left{display:flex;align-items:center;gap:12px;}
+.chart-ico{width:36px;height:36px;background:var(--grad);border-radius:9px;display:flex;align-items:center;justify-content:center;color:white;font-size:.9rem;flex-shrink:0;}
+.chart-title{font-size:.95rem;font-weight:700;color:var(--text);}
+.chart-sub{font-size:.76rem;color:var(--muted);}
+.chart-body{padding:18px 22px 22px;}
+.chart-canvas-wrap{position:relative;height:220px;}
+.chart-canvas-wrap.tall{height:280px;}
+.chart-canvas-wrap.short{height:160px;}
+
+/* TABLES */
+.rank-table{width:100%;border-collapse:collapse;}
+.rank-table th{text-align:left;padding:9px 12px;font-size:.65rem;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);background:var(--bg);border-bottom:1.5px solid var(--border);}
+.rank-table td{padding:10px 12px;border-bottom:1px solid var(--bg);font-size:.83rem;vertical-align:middle;}
+.rank-table tr:last-child td{border-bottom:none;}
+.rank-table tr:hover td{background:#faf9ff;}
+.rank-num{width:26px;height:26px;border-radius:50%;background:var(--bg);font-weight:800;font-size:.75rem;color:var(--brand);display:inline-flex;align-items:center;justify-content:center;}
+.rank-num.gold{background:#fef3c7;color:#b45309;}
+.rank-num.silver{background:#f1f5f9;color:#475569;}
+.rank-num.bronze{background:#fdf4ec;color:#c2410c;}
+.badge-pill{display:inline-block;padding:2px 10px;border-radius:50px;font-size:.72rem;font-weight:700;}
+.badge-green{background:#ecfdf5;color:#059669;}
+.badge-orange{background:#fffbeb;color:#b45309;}
+.badge-red{background:#fff1f2;color:#e11d48;}
+.bar-mini{height:6px;border-radius:3px;background:var(--grad);margin-top:4px;}
+.perf-star{color:#f59e0b;}
+
+/* CATEGORY PILLS */
+.cat-list{display:flex;flex-direction:column;gap:12px;padding:4px 0;}
+.cat-item{}
+.cat-item-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;}
+.cat-item-name{font-size:.85rem;font-weight:700;color:var(--text);}
+.cat-item-pct{font-size:.78rem;font-weight:700;color:var(--brand);}
+.cat-bar-bg{height:8px;background:var(--bg);border-radius:4px;overflow:hidden;}
+.cat-bar-fill{height:100%;border-radius:4px;background:var(--grad);}
+.cat-stats{display:flex;gap:12px;margin-top:4px;}
+.cat-stat{font-size:.72rem;color:var(--muted);}
+.cat-stat span{font-weight:700;color:var(--text);}
+
+/* TOGGLE TABS */
+.tab-toggle{display:flex;gap:4px;background:var(--bg);border-radius:8px;padding:3px;}
+.tab-btn{padding:5px 12px;border-radius:6px;border:none;background:transparent;font-size:.78rem;font-weight:700;color:var(--muted);cursor:pointer;transition:.15s;}
+.tab-btn.active{background:white;color:var(--brand);box-shadow:0 1px 4px rgba(0,0,0,.08);}
+
+@media(max-width:768px){
+    .kpi-grid{grid-template-columns:repeat(2,1fr);}
+    .chart-row.cols-2,.chart-row.cols-3{grid-template-columns:1fr;}
+}
+@media(max-width:480px){.kpi-grid{grid-template-columns:1fr 1fr;}.kpi-card .kpi-val{font-size:1.3rem;}}
 </style>
 
 <div class="pg">
     <div class="pg-header">
-        <h1><i class="fas fa-gear" style="color:var(--brand);margin-right:10px;"></i>Settings</h1>
-        <p>Manage system preferences, data backup, and restore.</p>
+        <div>
+            <h1><i class="fas fa-chart-line" style="color:var(--brand);margin-right:10px;"></i>Analytics</h1>
+            <p>Sales trends, top performers, and business insights</p>
+        </div>
     </div>
 
-    <!-- BACKUP & RESTORE CARD -->
-    <div class="settings-card">
-        <div class="settings-card-head">
-            <div class="ico"><i class="fas fa-database"></i></div>
-            <div>
-                <strong>Backup &amp; Restore</strong>
-                <span>Export your data or restore from a previous backup</span>
-            </div>
+    <!-- KPI SUMMARY -->
+    <div class="kpi-grid">
+        <div class="kpi-card">
+            <div class="kpi-ico purple"><i class="fas fa-peso-sign"></i></div>
+            <div class="kpi-label">Total Revenue</div>
+            <div class="kpi-val">₱{{ "{:,.0f}".format(total_revenue) }}</div>
+            <div class="kpi-sub">All-time gross sales</div>
         </div>
-        <div class="settings-card-body">
+        <div class="kpi-card">
+            <div class="kpi-ico green"><i class="fas fa-arrow-trend-up"></i></div>
+            <div class="kpi-label">Total Profit</div>
+            <div class="kpi-val">₱{{ "{:,.0f}".format(total_profit) }}</div>
+            <div class="kpi-sub">Revenue minus cost</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-ico orange"><i class="fas fa-box-open"></i></div>
+            <div class="kpi-label">Units Sold</div>
+            <div class="kpi-val">{{ "{:,}".format(total_units_sold) }}</div>
+            <div class="kpi-sub">Total items moved</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-ico blue"><i class="fas fa-receipt"></i></div>
+            <div class="kpi-label">Transactions</div>
+            <div class="kpi-val">{{ "{:,}".format(total_transactions) }}</div>
+            <div class="kpi-sub">Avg margin: {{ avg_margin }}%</div>
+        </div>
+    </div>
 
-            <!-- BACKUP -->
-            <div class="settings-section">
-                <div class="settings-desc">
-                    <h4><i class="fas fa-download" style="color:var(--brand);margin-right:6px;"></i>Download Backup</h4>
-                    <p>Export all products, stock-in logs, and sales logs as a <strong>.json</strong> file.<br>Store it safely — you can use it to restore data anytime.</p>
-                </div>
-                <a href="/settings/backup" class="btn btn-primary">
-                    <i class="fas fa-download"></i> Download Backup
-                </a>
-            </div>
-
-            <div class="divider-row"></div>
-
-            <!-- RESTORE -->
-            <div class="settings-section">
-                <div class="settings-desc">
-                    <h4><i class="fas fa-upload" style="color:#b45309;margin-right:6px;"></i>Restore from Backup</h4>
-                    <p>Upload a previously downloaded <strong>.json</strong> backup file.<br><span style="color:#e11d48;font-weight:600;">⚠ Warning:</span> This will permanently replace all current data.</p>
-                </div>
-            </div>
-            <form class="restore-form" method="POST" action="/settings/restore" enctype="multipart/form-data">
-                <div class="file-input-wrap">
-                    <div class="file-label" id="fileLabel">
-                        <i class="fas fa-folder-open"></i>
-                        <span id="fileLabelText">Choose backup file...</span>
+    <!-- SALES TREND (30 days) -->
+    <div class="chart-row cols-1">
+        <div class="chart-card">
+            <div class="chart-head">
+                <div class="chart-head-left">
+                    <div class="chart-ico"><i class="fas fa-chart-area"></i></div>
+                    <div>
+                        <div class="chart-title">Sales Trend — Last 30 Days</div>
+                        <div class="chart-sub">Daily revenue and units sold</div>
                     </div>
-                    <input type="file" name="backup_file" accept=".json" required onchange="updateFileLabel(this)">
                 </div>
-                <button type="submit" class="btn btn-warning" onclick="return confirm('This will replace ALL current data with the backup. Are you sure?')">
-                    <i class="fas fa-rotate-left"></i> Restore Now
-                </button>
-            </form>
-
+                <div class="tab-toggle">
+                    <button class="tab-btn active" onclick="switchTrend('revenue',this)">Revenue</button>
+                    <button class="tab-btn" onclick="switchTrend('units',this)">Units</button>
+                </div>
+            </div>
+            <div class="chart-body">
+                <div class="chart-canvas-wrap tall"><canvas id="trendChart"></canvas></div>
+            </div>
         </div>
     </div>
 
-    <!-- SYSTEM INFO CARD -->
-    <div class="settings-card">
-        <div class="settings-card-head">
-            <div class="ico"><i class="fas fa-circle-info"></i></div>
-            <div>
-                <strong>System Information</strong>
-                <span>Current app and database stats</span>
+    <!-- MONTHLY + HOURLY -->
+    <div class="chart-row cols-2">
+        <div class="chart-card">
+            <div class="chart-head">
+                <div class="chart-head-left">
+                    <div class="chart-ico"><i class="fas fa-calendar-days"></i></div>
+                    <div>
+                        <div class="chart-title">Monthly Revenue vs Profit</div>
+                        <div class="chart-sub">Last 6 months comparison</div>
+                    </div>
+                </div>
+            </div>
+            <div class="chart-body">
+                <div class="chart-canvas-wrap"><canvas id="monthlyChart"></canvas></div>
             </div>
         </div>
-        <div class="settings-card-body">
-            <div class="info-grid">
-                <div class="info-item">
-                    <label>Total Products</label>
-                    <span>{{ product_count }}</span>
+        <div class="chart-card">
+            <div class="chart-head">
+                <div class="chart-head-left">
+                    <div class="chart-ico"><i class="fas fa-clock"></i></div>
+                    <div>
+                        <div class="chart-title">Peak Sales Hours</div>
+                        <div class="chart-sub">Units sold by hour of day</div>
+                    </div>
                 </div>
-                <div class="info-item">
-                    <label>Total Sales Logged</label>
-                    <span>{{ sales_count }}</span>
+            </div>
+            <div class="chart-body">
+                <div class="chart-canvas-wrap"><canvas id="hourlyChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOP ITEMS + CATEGORY -->
+    <div class="chart-row cols-3">
+        <div class="chart-card">
+            <div class="chart-head">
+                <div class="chart-head-left">
+                    <div class="chart-ico"><i class="fas fa-trophy"></i></div>
+                    <div>
+                        <div class="chart-title">Top Items</div>
+                        <div class="chart-sub">Best selling products</div>
+                    </div>
                 </div>
-                <div class="info-item">
-                    <label>Stock-In Records</label>
-                    <span>{{ stock_in_count }}</span>
+                <div class="tab-toggle">
+                    <button class="tab-btn active" id="topRevBtn" onclick="showTopTab('revenue')">Revenue</button>
+                    <button class="tab-btn" id="topUnitBtn" onclick="showTopTab('units')">Units</button>
                 </div>
-                <div class="info-item">
-                    <label>App Version</label>
-                    <span>F.L.E.X v1.0</span>
+            </div>
+            <div class="chart-body" style="padding-top:10px;">
+                <!-- By Revenue -->
+                <div id="topRevTable">
+                <table class="rank-table">
+                    <thead><tr><th>#</th><th>Product</th><th>Revenue</th><th>Units</th></tr></thead>
+                    <tbody>
+                    {% for i, item in enumerate(top_by_revenue) %}
+                    <tr>
+                        <td><span class="rank-num {{ 'gold' if i==0 else 'silver' if i==1 else 'bronze' if i==2 else '' }}">{{ i+1 }}</span></td>
+                        <td>
+                            <strong style="font-size:.83rem;">{{ item.name }}</strong>
+                            {% if item.flavor %}<br><small style="color:var(--brand);">{{ item.flavor }}</small>{% endif %}
+                        </td>
+                        <td style="font-weight:800;color:var(--green);">₱{{ "{:,.0f}".format(item.revenue) }}</td>
+                        <td style="color:var(--muted);">{{ item.units }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not top_by_revenue %}<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;">No sales data yet</td></tr>{% endif %}
+                    </tbody>
+                </table>
                 </div>
+                <!-- By Units -->
+                <div id="topUnitTable" style="display:none;">
+                <table class="rank-table">
+                    <thead><tr><th>#</th><th>Product</th><th>Units</th><th>Revenue</th></tr></thead>
+                    <tbody>
+                    {% for i, item in enumerate(top_by_units) %}
+                    <tr>
+                        <td><span class="rank-num {{ 'gold' if i==0 else 'silver' if i==1 else 'bronze' if i==2 else '' }}">{{ i+1 }}</span></td>
+                        <td>
+                            <strong style="font-size:.83rem;">{{ item.name }}</strong>
+                            {% if item.flavor %}<br><small style="color:var(--brand);">{{ item.flavor }}</small>{% endif %}
+                        </td>
+                        <td style="font-weight:800;color:var(--brand);">{{ item.units }}</td>
+                        <td style="color:var(--muted);">₱{{ "{:,.0f}".format(item.revenue) }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not top_by_units %}<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;">No sales data yet</td></tr>{% endif %}
+                    </tbody>
+                </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <div class="chart-head">
+                <div class="chart-head-left">
+                    <div class="chart-ico"><i class="fas fa-layer-group"></i></div>
+                    <div>
+                        <div class="chart-title">Category Performance</div>
+                        <div class="chart-sub">Revenue share by type</div>
+                    </div>
+                </div>
+            </div>
+            <div class="chart-body" style="padding-top:12px;">
+                <div class="chart-canvas-wrap short"><canvas id="catChart"></canvas></div>
+                <div class="cat-list" style="margin-top:16px;">
+                    {% for c in cat_perf %}
+                    <div class="cat-item">
+                        <div class="cat-item-head">
+                            <div class="cat-item-name">{{ c.name }}</div>
+                            <div class="cat-item-pct">{{ c.pct }}%</div>
+                        </div>
+                        <div class="cat-bar-bg"><div class="cat-bar-fill" style="width:{{ c.pct }}%;"></div></div>
+                        <div class="cat-stats">
+                            <div class="cat-stat">Revenue: <span>₱{{ "{:,.0f}".format(c.revenue) }}</span></div>
+                            <div class="cat-stat">Units: <span>{{ c.units }}</span></div>
+                            <div class="cat-stat">Profit: <span>₱{{ "{:,.0f}".format(c.profit) }}</span></div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                    {% if not cat_perf %}<p style="color:var(--muted);font-size:.85rem;text-align:center;padding:16px 0;">No category data yet</p>{% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- HIGH PERFORMERS -->
+    <div class="chart-row cols-1">
+        <div class="chart-card">
+            <div class="chart-head">
+                <div class="chart-head-left">
+                    <div class="chart-ico"><i class="fas fa-star"></i></div>
+                    <div>
+                        <div class="chart-title">High Performance Products</div>
+                        <div class="chart-sub">Products with above-average profit margins (avg: {{ avg_margin }}%)</div>
+                    </div>
+                </div>
+            </div>
+            <div class="chart-body" style="padding-top:10px;">
+                <table class="rank-table">
+                    <thead><tr><th>#</th><th>Product</th><th>Units Sold</th><th>Revenue</th><th>Profit</th><th>Margin</th><th>Rating</th></tr></thead>
+                    <tbody>
+                    {% for i, p in enumerate(high_performers) %}
+                    <tr>
+                        <td><span class="rank-num {{ 'gold' if i==0 else 'silver' if i==1 else 'bronze' if i==2 else '' }}">{{ i+1 }}</span></td>
+                        <td>
+                            <strong style="font-size:.83rem;">{{ p.name }}</strong>
+                            {% if p.flavor %}<br><small style="color:var(--brand);">{{ p.flavor }}</small>{% endif %}
+                        </td>
+                        <td>{{ p.units }}</td>
+                        <td style="font-weight:700;color:var(--text);">₱{{ "{:,.0f}".format(p.revenue) }}</td>
+                        <td style="font-weight:700;color:var(--green);">₱{{ "{:,.0f}".format(p.profit) }}</td>
+                        <td>
+                            <span class="badge-pill {{ 'badge-green' if p.margin >= 40 else 'badge-orange' if p.margin >= 20 else 'badge-red' }}">
+                                {{ p.margin }}%
+                            </span>
+                        </td>
+                        <td>
+                            {% set stars = 5 if p.margin >= 50 else 4 if p.margin >= 35 else 3 if p.margin >= 20 else 2 %}
+                            {% for _ in range(stars) %}<i class="fas fa-star perf-star" style="font-size:.75rem;"></i>{% endfor %}
+                            {% for _ in range(5 - stars) %}<i class="far fa-star perf-star" style="font-size:.75rem;opacity:.3;"></i>{% endfor %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% if not high_performers %}<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:24px;">No performance data yet. Record some sales first.</td></tr>{% endif %}
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
-function updateFileLabel(input) {
-    const label = document.getElementById('fileLabelText');
-    label.textContent = input.files.length ? input.files[0].name : 'Choose backup file...';
+const trendLabels   = {{ trend_labels|tojson }};
+const trendRevenue  = {{ trend_revenue|tojson }};
+const trendUnits    = {{ trend_units|tojson }};
+const monthlyLabels = {{ monthly_labels|tojson }};
+const monthlyRev    = {{ monthly_revenue|tojson }};
+const monthlyProfit = {{ monthly_profit|tojson }};
+const hourlyLabels  = {{ hourly_labels|tojson }};
+const hourlyValues  = {{ hourly_values|tojson }};
+const catLabels     = {{ cat_perf|map(attribute='name')|list|tojson }};
+const catRevenue    = {{ cat_perf|map(attribute='revenue')|list|tojson }};
+
+Chart.defaults.font.family = "'Inter','Outfit',sans-serif";
+Chart.defaults.color = '#64748b';
+
+const COLORS = ['#705194','#9b6fc4','#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#14b8a6'];
+
+// --- TREND CHART ---
+const trendCtx = document.getElementById('trendChart').getContext('2d');
+const gradRev = trendCtx.createLinearGradient(0, 0, 0, 280);
+gradRev.addColorStop(0, 'rgba(112,81,148,0.25)');
+gradRev.addColorStop(1, 'rgba(112,81,148,0)');
+
+let trendChart = new Chart(trendCtx, {
+    type: 'line',
+    data: {
+        labels: trendLabels,
+        datasets: [{
+            label: 'Revenue (₱)',
+            data: trendRevenue,
+            borderColor: '#705194',
+            backgroundColor: gradRev,
+            borderWidth: 2.5,
+            pointRadius: 0,
+            pointHoverRadius: 5,
+            fill: true,
+            tension: 0.4
+        }]
+    },
+    options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: {
+            callbacks: { label: ctx => ' ₱' + ctx.raw.toLocaleString() }
+        }},
+        scales: {
+            x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 11 } } },
+            y: { grid: { color: '#f1f0f8' }, ticks: { callback: v => '₱' + v.toLocaleString() } }
+        }
+    }
+});
+
+function switchTrend(type, btn) {
+    document.querySelectorAll('.period-tab, .tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const isRev = type === 'revenue';
+    trendChart.data.datasets[0].data = isRev ? trendRevenue : trendUnits;
+    trendChart.data.datasets[0].label = isRev ? 'Revenue (₱)' : 'Units Sold';
+    trendChart.options.plugins.tooltip.callbacks.label = ctx =>
+        isRev ? ' ₱' + ctx.raw.toLocaleString() : ' ' + ctx.raw + ' units';
+    trendChart.options.scales.y.ticks.callback = v => isRev ? '₱' + v.toLocaleString() : v;
+    trendChart.update();
+}
+
+// --- MONTHLY CHART ---
+new Chart(document.getElementById('monthlyChart').getContext('2d'), {
+    type: 'bar',
+    data: {
+        labels: monthlyLabels,
+        datasets: [
+            { label: 'Revenue', data: monthlyRev, backgroundColor: 'rgba(112,81,148,0.8)', borderRadius: 6 },
+            { label: 'Profit',  data: monthlyProfit, backgroundColor: 'rgba(16,185,129,0.7)', borderRadius: 6 }
+        ]
+    },
+    options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+            tooltip: { callbacks: { label: ctx => ' ₱' + ctx.raw.toLocaleString() } }
+        },
+        scales: {
+            x: { grid: { display: false } },
+            y: { grid: { color: '#f1f0f8' }, ticks: { callback: v => '₱' + v.toLocaleString() } }
+        }
+    }
+});
+
+// --- HOURLY CHART ---
+new Chart(document.getElementById('hourlyChart').getContext('2d'), {
+    type: 'bar',
+    data: {
+        labels: hourlyLabels,
+        datasets: [{
+            label: 'Units Sold',
+            data: hourlyValues,
+            backgroundColor: hourlyValues.map((v, i) => {
+                const max = Math.max(...hourlyValues);
+                return v === max ? 'rgba(245,158,11,0.85)' : 'rgba(112,81,148,0.5)';
+            }),
+            borderRadius: 4
+        }]
+    },
+    options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+            x: { grid: { display: false }, ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+            y: { grid: { color: '#f1f0f8' }, ticks: { stepSize: 1 } }
+        }
+    }
+});
+
+// --- CATEGORY DONUT ---
+new Chart(document.getElementById('catChart').getContext('2d'), {
+    type: 'doughnut',
+    data: {
+        labels: catLabels,
+        datasets: [{ data: catRevenue, backgroundColor: COLORS, borderWidth: 2, borderColor: 'white', hoverOffset: 6 }]
+    },
+    options: {
+        responsive: true, maintainAspectRatio: false,
+        cutout: '65%',
+        plugins: {
+            legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 }, padding: 10 } },
+            tooltip: { callbacks: { label: ctx => ' ₱' + ctx.raw.toLocaleString() } }
+        }
+    }
+});
+
+// --- TOP ITEMS TAB TOGGLE ---
+function showTopTab(tab) {
+    document.getElementById('topRevTable').style.display = tab === 'revenue' ? '' : 'none';
+    document.getElementById('topUnitTable').style.display = tab === 'units' ? '' : 'none';
+    document.getElementById('topRevBtn').classList.toggle('active', tab === 'revenue');
+    document.getElementById('topUnitBtn').classList.toggle('active', tab === 'units');
 }
 </script>
 {% endblock %}
+
 """
 
 # --- 7. ASSIGN DICTLOADER TO JINJA WORKFLOW ---
