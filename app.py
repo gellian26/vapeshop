@@ -414,6 +414,185 @@ def logout():
     session.clear()
     return redirect(url_for('login'))
 
+@app.route('/settings', methods=['GET', 'POST'])
+def settings():
+    global ADMIN_USER, ADMIN_PASS
+    msg = None
+    msg_type = 'success'
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+
+        if action == 'change_password':
+            current = request.form.get('current_password', '')
+            new_pw = request.form.get('new_password', '')
+            confirm = request.form.get('confirm_password', '')
+            if current != ADMIN_PASS:
+                msg, msg_type = "Current password is incorrect.", 'danger'
+            elif len(new_pw) < 4:
+                msg, msg_type = "New password must be at least 4 characters.", 'danger'
+            elif new_pw != confirm:
+                msg, msg_type = "New passwords do not match.", 'danger'
+            else:
+                ADMIN_PASS = new_pw
+                msg = "Password updated successfully."
+
+        elif action == 'change_username':
+            new_user = request.form.get('new_username', '').strip()
+            pw_confirm = request.form.get('password_for_user', '')
+            if pw_confirm != ADMIN_PASS:
+                msg, msg_type = "Password confirmation incorrect.", 'danger'
+            elif len(new_user) < 3:
+                msg, msg_type = "Username must be at least 3 characters.", 'danger'
+            else:
+                ADMIN_USER = new_user
+                msg = f"Username changed to '{ADMIN_USER}'."
+
+        elif action == 'clear_sales_log':
+            pw = request.form.get('danger_password', '')
+            if pw != ADMIN_PASS:
+                msg, msg_type = "Incorrect password. Sales log not cleared.", 'danger'
+            else:
+                StockOutLog.query.delete()
+                db.session.commit()
+                msg = "All sales logs cleared."
+
+        elif action == 'clear_stock_in_log':
+            pw = request.form.get('danger_password2', '')
+            if pw != ADMIN_PASS:
+                msg, msg_type = "Incorrect password. Stock-in log not cleared.", 'danger'
+            else:
+                StockInLog.query.delete()
+                db.session.commit()
+                msg = "All stock-in logs cleared."
+
+    total_products = Product.query.count()
+    total_sales_logs = StockOutLog.query.count()
+    total_stockin_logs = StockInLog.query.count()
+
+    return render_template('settings.html',
+        msg=msg, msg_type=msg_type,
+        admin_user=ADMIN_USER,
+        total_products=total_products,
+        total_sales_logs=total_sales_logs,
+        total_stockin_logs=total_stockin_logs
+    )
+
+@app.route('/settings/backup')
+def settings_backup():
+    import json
+    from flask import Response
+
+    products = [{
+        'barcode': p.barcode, 'name': p.name, 'flavor': p.flavor,
+        'type': p.type, 'version': p.version, 'mg': p.mg,
+        'qty': p.qty, 'cost': p.cost, 'price': p.price,
+        'discount': p.discount, 'image': p.image,
+        'date_added': p.date_added.isoformat() if p.date_added else None
+    } for p in Product.query.all()]
+
+    sales_logs = [{
+        'date': l.date.isoformat() if l.date else None,
+        'name': l.name, 'flavor': l.flavor, 'category': l.category,
+        'qty': l.qty, 'price': l.price, 'cost': l.cost
+    } for l in StockOutLog.query.all()]
+
+    stockin_logs = [{
+        'date': l.date.isoformat() if l.date else None,
+        'name': l.name, 'flavor': l.flavor, 'category': l.category,
+        'qty': l.qty
+    } for l in StockInLog.query.all()]
+
+    payload = {
+        'backup_version': '1.0',
+        'exported_at': datetime.now().isoformat(),
+        'products': products,
+        'sales_logs': sales_logs,
+        'stockin_logs': stockin_logs,
+    }
+    filename = f"flex_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    return Response(
+        json.dumps(payload, indent=2),
+        mimetype='application/json',
+        headers={'Content-Disposition': f'attachment; filename={filename}'}
+    )
+
+@app.route('/settings/restore', methods=['POST'])
+def settings_restore():
+    import json
+    pw = request.form.get('restore_password', '')
+    if pw != ADMIN_PASS:
+        flash("Incorrect password. Restore cancelled.", "danger")
+        return redirect(url_for('settings'))
+
+    file = request.files.get('restore_file')
+    if not file or file.filename == '':
+        flash("No file selected.", "danger")
+        return redirect(url_for('settings'))
+
+    try:
+        data = json.loads(file.read().decode('utf-8'))
+    except Exception:
+        flash("Invalid backup file. Could not parse JSON.", "danger")
+        return redirect(url_for('settings'))
+
+    mode = request.form.get('restore_mode', 'merge')  # 'merge' or 'overwrite'
+
+    try:
+        if mode == 'overwrite':
+            Product.query.delete()
+            StockOutLog.query.delete()
+            StockInLog.query.delete()
+            db.session.commit()
+
+        # Restore products
+        existing_barcodes = {p.barcode for p in Product.query.all() if p.barcode}
+        existing_names_flavors = {(p.name, p.flavor) for p in Product.query.all()}
+        added_products = 0
+        for p in data.get('products', []):
+            key = (p.get('name'), p.get('flavor'))
+            if mode == 'merge' and (p.get('barcode') in existing_barcodes or key in existing_names_flavors):
+                continue
+            new_p = Product(
+                barcode=p.get('barcode'), name=p.get('name', ''), flavor=p.get('flavor'),
+                type=p.get('type'), version=p.get('version'), mg=p.get('mg'),
+                qty=p.get('qty', 0), cost=p.get('cost', 0.0), price=p.get('price', 0.0),
+                discount=p.get('discount', 0.0), image=p.get('image', 'default.jpg')
+            )
+            db.session.add(new_p)
+            added_products += 1
+
+        # Restore sales logs
+        added_sales = 0
+        for l in data.get('sales_logs', []):
+            db.session.add(StockOutLog(
+                date=datetime.fromisoformat(l['date']) if l.get('date') else datetime.now(),
+                name=l.get('name', ''), flavor=l.get('flavor'), category=l.get('category'),
+                qty=l.get('qty', 0), price=l.get('price', 0.0), cost=l.get('cost', 0.0)
+            ))
+            added_sales += 1
+
+        # Restore stock-in logs
+        added_stockin = 0
+        for l in data.get('stockin_logs', []):
+            db.session.add(StockInLog(
+                date=datetime.fromisoformat(l['date']) if l.get('date') else datetime.now(),
+                name=l.get('name', ''), flavor=l.get('flavor'), category=l.get('category'),
+                qty=l.get('qty', 0)
+            ))
+            added_stockin += 1
+
+        db.session.commit()
+        flash(
+            f"Restore complete — {added_products} products, {added_sales} sales, {added_stockin} stock-in records imported.",
+            "success"
+        )
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Restore failed: {str(e)}", "danger")
+
+    return redirect(url_for('settings'))
+
 
 # --- 6. DEFINE EMBEDDED JINJA TEMPLATE STRINGS ---
 
@@ -673,6 +852,7 @@ TEMPLATES["base.html"] = """
             <li><a href="/products" class="{{ 'active' if request.path == '/products' }}"><i class="fa-solid fa-tags"></i> <span>Products</span></a></li>
             <li><a href="/reports" class="{{ 'active' if request.path == '/reports' }}"><i class="fa-solid fa-file-waveform"></i> <span>Reports</span></a></li>
             <li><a href="/analytics" class="{{ 'active' if request.path == '/analytics' }}"><i class="fa-solid fa-chart-line"></i> <span>Analytics</span></a></li>
+            <li><a href="/settings" class="{{ 'active' if request.path == '/settings' }}"><i class="fa-solid fa-gear"></i> <span>Settings</span></a></li>
         </ul>
 
         <div class="logout-container">
@@ -2335,6 +2515,42 @@ TEMPLATES["sales.html"] = """
                     <div id="searchResults" class="search-results"></div>
                 </div>
 
+                <!-- Chillax Infinite Set Variant Picker -->
+                <div id="chillaxPicker" style="display:none; margin-top:14px;">
+                    <!-- Step 1: Type -->
+                    <div id="chillaxStep1">
+                        <div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px;">Choose Variant</div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                            <button type="button" class="chillax-variant-btn" id="btnPodDevice"
+                                onclick="chillaxSelectType('pod_device')"
+                                style="padding:14px 10px;border-radius:12px;border:2px solid var(--border);background:white;cursor:pointer;font-weight:700;font-size:0.88rem;transition:.2s;display:flex;flex-direction:column;align-items:center;gap:4px;">
+                                <span style="font-size:1.3rem;">📦</span>
+                                <span>Pod &amp; Device</span>
+                                <span style="color:var(--brand);font-size:1rem;font-weight:900;">₱600</span>
+                            </button>
+                            <button type="button" class="chillax-variant-btn" id="btnPod"
+                                onclick="chillaxSelectType('pod')"
+                                style="padding:14px 10px;border-radius:12px;border:2px solid var(--border);background:white;cursor:pointer;font-weight:700;font-size:0.88rem;transition:.2s;display:flex;flex-direction:column;align-items:center;gap:4px;">
+                                <span style="font-size:1.3rem;">🫧</span>
+                                <span>Pod Only</span>
+                                <span style="color:var(--brand);font-size:1rem;font-weight:900;">₱450</span>
+                            </button>
+                        </div>
+                    </div>
+                    <!-- Step 2: Flavor -->
+                    <div id="chillaxStep2" style="display:none; margin-top:12px;">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                            <button type="button" onclick="chillaxBackToStep1()"
+                                style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:0.8rem;display:flex;align-items:center;gap:4px;padding:0;">
+                                <i class="fas fa-chevron-left"></i> Back
+                            </button>
+                            <div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);">Choose Flavor</div>
+                            <span id="chillaxVariantLabel" style="font-size:0.7rem;font-weight:700;color:var(--brand);background:var(--brand-light);padding:2px 8px;border-radius:20px;"></span>
+                        </div>
+                        <div id="chillaxFlavorList" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;max-height:260px;overflow-y:auto;"></div>
+                    </div>
+                </div>
+
                 <!-- Qty, Discount, and Total Row -->
                 <div class="fields-row">
                     <div class="field">
@@ -2395,6 +2611,41 @@ TEMPLATES["sales.html"] = """
 <script>
 const productsData = {{ products|tojson }};
 
+// ── Chillax Infinite Set: codename → flavor display name ──────────────────
+const CHILLAX_FLAVOR_MAP = {
+    'thunder blaze':    'Gatorade',
+    'very mellow':      'Watermelon',
+    'violet fusion':    'Taro Ice Cream',
+    'silver dynasty':   'Menthol Ice',
+    'cosmic crush':     'Grape',
+    'pink harmony':     'Juice Strawberry',
+    'rustic haze':      'Classic Tobacco',
+    'crystal wink':     'Bubblegum',
+    'click kick':       'Sour Apple',
+    'twilight willow':  'Blackcurrant',
+};
+
+// Emoji per flavor for extra flair
+const CHILLAX_FLAVOR_EMOJI = {
+    'thunder blaze':'⚡','very mellow':'🍉','violet fusion':'🍦',
+    'silver dynasty':'❄️','cosmic crush':'🍇','pink harmony':'🍓',
+    'rustic haze':'🚬','crystal wink':'🫧','click kick':'🍏','twilight willow':'🫐',
+};
+
+let chillaxSelectedType = null; // 'pod_device' | 'pod'
+
+function isChillaxQuery(q) {
+    return q.length >= 3 && 'chillax infinite set'.includes(q.toLowerCase().trim()) ||
+           q.toLowerCase().includes('chillax');
+}
+
+function getChillaxProducts() {
+    return Object.entries(productsData).filter(([id, p]) =>
+        p.name.toLowerCase().includes('chillax') ||
+        (p.name.toLowerCase().includes('infinite') && p.name.toLowerCase().includes('set'))
+    );
+}
+
 function showToast(msg, color = '#10b981') {
     const t = document.getElementById('toast');
     t.textContent = msg; t.style.borderBottom = `3px solid ${color}`;
@@ -2408,12 +2659,12 @@ function selectItem(id, label, price, stock, discount) {
     document.getElementById('hiddenKey').value = id;
     document.getElementById('productSearch').value = label;
     document.getElementById('searchResults').style.display = 'none';
+    document.getElementById('chillaxPicker').style.display = 'none';
 
     const discountNote = productDiscount > 0 ? ` — ${productDiscount}% OFF → ₱${finalPrice.toLocaleString(undefined,{minimumFractionDigits:2})}` : '';
     document.getElementById('badgeText').textContent = `${label} (In Stock: ${stock})${discountNote}`;
     document.getElementById('selectedBadge').classList.add('show');
 
-    // Store original price and product-level discount for calcTotal
     document.getElementById('qtyInput').dataset.basePrice = price;
     document.getElementById('qtyInput').dataset.productDiscount = productDiscount;
     document.getElementById('qtyInput').max = stock;
@@ -2424,12 +2675,36 @@ function selectItem(id, label, price, stock, discount) {
 }
 
 function filterProducts() {
-    const q = document.getElementById('productSearch').value.toLowerCase();
+    const q = document.getElementById('productSearch').value.toLowerCase().trim();
     const div = document.getElementById('searchResults');
+    const picker = document.getElementById('chillaxPicker');
     document.getElementById('saleBtn').disabled = true;
 
-    if (q.length < 1) { div.style.display = 'none'; return; }
+    if (q.length < 1) {
+        div.style.display = 'none';
+        picker.style.display = 'none';
+        return;
+    }
 
+    // ── Special Chillax Infinite Set flow ─────────────────────────────────
+    if (isChillaxQuery(q)) {
+        div.style.display = 'none';
+        picker.style.display = 'block';
+        // Reset to step 1 each time the user types
+        document.getElementById('chillaxStep1').style.display = 'block';
+        document.getElementById('chillaxStep2').style.display = 'none';
+        chillaxSelectedType = null;
+        // Reset variant button highlights
+        document.querySelectorAll('.chillax-variant-btn').forEach(b => {
+            b.style.borderColor = 'var(--border)';
+            b.style.background = 'white';
+            b.style.color = 'var(--text)';
+        });
+        return;
+    }
+
+    // ── Normal product search ──────────────────────────────────────────────
+    picker.style.display = 'none';
     const matches = Object.entries(productsData).filter(([id, p]) =>
         p.name.toLowerCase().includes(q) || (p.flavor||'').toLowerCase().includes(q)
     );
@@ -2441,6 +2716,59 @@ function filterProducts() {
         </div>
     `).join('');
     div.style.display = matches.length ? 'block' : 'none';
+}
+
+// Step 1 → Step 2: user picked Pod & Device or Pod
+function chillaxSelectType(type) {
+    chillaxSelectedType = type;
+    const targetPrice = type === 'pod_device' ? 600 : 450;
+    const label = type === 'pod_device' ? 'Pod & Device — ₱600' : 'Pod Only — ₱450';
+
+    // Highlight selected button
+    document.querySelectorAll('.chillax-variant-btn').forEach(b => {
+        b.style.borderColor = 'var(--border)';
+        b.style.background = 'white';
+        b.style.color = 'var(--text)';
+    });
+    const activeBtn = document.getElementById(type === 'pod_device' ? 'btnPodDevice' : 'btnPod');
+    activeBtn.style.borderColor = 'var(--brand)';
+    activeBtn.style.background = 'var(--brand-light)';
+    activeBtn.style.color = 'var(--brand)';
+
+    // Build flavor list
+    // Filter Chillax products by price matching target (or show all if no price match — fallback)
+    let chillaxProds = getChillaxProducts();
+    let priceMatched = chillaxProds.filter(([id, p]) => Math.round(p.price) === targetPrice);
+    const flavors = priceMatched.length ? priceMatched : chillaxProds;
+
+    const flavorList = document.getElementById('chillaxFlavorList');
+    flavorList.innerHTML = flavors.map(([id, p]) => {
+        const codeKey = (p.flavor || '').toLowerCase().trim();
+        const flavorName = CHILLAX_FLAVOR_MAP[codeKey] || p.flavor;
+        const emoji = CHILLAX_FLAVOR_EMOJI[codeKey] || '🌿';
+        const codename = p.flavor || '';
+        const safeLabel = `Chillax Infinite Set (${type === 'pod_device' ? 'Pod & Device' : 'Pod'}) - ${codename}`;
+        return `
+        <div onclick="selectItem('${id}','${safeLabel.replace(/'/g,"\\'")}',${p.price},${p.qty},${p.discount||0})"
+             style="padding:10px 12px;border-radius:10px;border:1.5px solid var(--border);background:white;cursor:pointer;transition:.2s;"
+             onmouseover="this.style.borderColor='var(--brand)';this.style.background='var(--brand-light)';"
+             onmouseout="this.style.borderColor='var(--border)';this.style.background='white';">
+            <div style="font-size:1.1rem;margin-bottom:2px;">${emoji}</div>
+            <div style="font-size:0.78rem;font-weight:800;color:var(--text);">${codename}</div>
+            <div style="font-size:0.7rem;color:var(--brand);font-weight:600;">${flavorName}</div>
+            <div style="font-size:0.68rem;color:var(--muted);margin-top:2px;">Stock: ${p.qty}</div>
+        </div>`;
+    }).join('');
+
+    document.getElementById('chillaxVariantLabel').textContent = label;
+    document.getElementById('chillaxStep1').style.display = 'none';
+    document.getElementById('chillaxStep2').style.display = 'block';
+}
+
+function chillaxBackToStep1() {
+    document.getElementById('chillaxStep1').style.display = 'block';
+    document.getElementById('chillaxStep2').style.display = 'none';
+    chillaxSelectedType = null;
 }
 
 function calcTotal() {
@@ -2468,10 +2796,15 @@ function clearSale() {
     document.getElementById('totalBox').innerHTML = '₱ 0.00';
     document.getElementById('selectedBadge').classList.remove('show');
     document.getElementById('saleBtn').disabled = true;
+    document.getElementById('chillaxPicker').style.display = 'none';
+    document.getElementById('chillaxStep1').style.display = 'block';
+    document.getElementById('chillaxStep2').style.display = 'none';
 }
 
 window.addEventListener('click', e => {
-    if (!e.target.matches('#productSearch')) document.getElementById('searchResults').style.display = 'none';
+    if (!e.target.closest('#productSearch') && !e.target.closest('#chillaxPicker')) {
+        document.getElementById('searchResults').style.display = 'none';
+    }
 });
 </script>
 {% endblock %}
@@ -2933,6 +3266,312 @@ function showTopTab(tab) {
 </script>
 {% endblock %}
 
+"""
+
+TEMPLATES["settings.html"] = """
+{% extends "base.html" %}
+{% block content %}
+<style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+        --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
+        --orange:#f59e0b; --grad:linear-gradient(135deg,#705194,#9b6fc4);
+        --surface:#ffffff; --bg:#f8f7ff; --border:#e8e4f0;
+        --text:#1e293b; --muted:#64748b;
+        --radius:16px; --radius-sm:10px;
+        --shadow:0 2px 10px rgba(112,81,148,.06);
+    }
+    body { background: var(--bg); }
+    .pg { max-width: 720px; margin: 0 auto; padding: 16px 16px 60px; }
+    .pg-header { margin-bottom: 24px; }
+    .pg-header h1 { font-size:1.7rem; font-weight:800; color:var(--text); margin:0; }
+    .pg-header p { color:var(--muted); margin:4px 0 0; font-size:0.88rem; }
+
+    .section-label {
+        font-size: 0.68rem; font-weight: 800; text-transform: uppercase;
+        letter-spacing: 1px; color: var(--muted); margin: 24px 0 10px;
+    }
+
+    .card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border); margin-bottom: 16px; overflow: hidden; }
+    .card-head { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; border-left: 4px solid var(--brand); }
+    .card-head .ico { background: var(--grad); color: white; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; flex-shrink: 0; }
+    .card-head strong { font-size: 0.92rem; color: var(--text); }
+    .card-head small { font-size: 0.75rem; color: var(--muted); margin-left: auto; }
+    .card-body { padding: 20px; }
+
+    .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
+    .field:last-of-type { margin-bottom: 0; }
+    .field label { font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+    .field input { padding: 10px 12px; background: var(--bg); border: 1.5px solid var(--border); border-radius: var(--radius-sm); font-size: 0.9rem; color: var(--text); width: 100%; }
+    .field input:focus { outline: none; border-color: var(--brand); background: white; }
+
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 20px; height: 42px; border-radius: var(--radius-sm); font-weight: 700; font-size: 0.85rem; cursor: pointer; border: none; transition: .2s; }
+    .btn-primary { background: var(--grad); color: white; }
+    .btn-primary:hover { opacity: .88; }
+    .btn-danger { background: #fee2e2; color: #b91c1c; }
+    .btn-danger:hover { background: #fecaca; }
+
+    .alert { padding: 12px 16px; border-radius: var(--radius-sm); font-size: 0.85rem; font-weight: 600; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+    .alert-success { background: #f0fdf4; border: 1.5px solid #6ee7b7; color: #065f46; }
+    .alert-danger  { background: #fef2f2; border: 1.5px solid #fca5a5; color: #991b1b; }
+
+    .stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .stat-box { background: var(--bg); border-radius: var(--radius-sm); padding: 14px; text-align: center; border: 1px solid var(--border); }
+    .stat-box .num { font-size: 1.5rem; font-weight: 900; color: var(--brand); }
+    .stat-box .lbl { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; font-weight: 700; letter-spacing: .5px; margin-top: 2px; }
+
+    .danger-zone { border-color: #fca5a5 !important; }
+    .danger-zone .card-head { border-left-color: var(--red); }
+    .danger-zone .card-head .ico { background: linear-gradient(135deg,#ef4444,#dc2626); }
+
+    .backup-zone .card-head { border-left-color: #3b82f6; }
+    .backup-zone .card-head .ico { background: linear-gradient(135deg,#3b82f6,#6366f1); }
+
+    .restore-drop {
+        border: 2px dashed var(--border); border-radius: var(--radius-sm);
+        padding: 22px; text-align: center; cursor: pointer;
+        transition: .2s; background: var(--bg); position: relative;
+    }
+    .restore-drop:hover, .restore-drop.dragover { border-color: var(--brand); background: var(--brand-light); }
+    .restore-drop input[type=file] { position:absolute; inset:0; opacity:0; cursor:pointer; width:100%; }
+    .restore-drop .drop-icon { font-size: 1.6rem; color: var(--muted); margin-bottom: 6px; }
+    .restore-drop .drop-label { font-size: 0.82rem; color: var(--muted); font-weight: 600; }
+    .restore-drop .drop-name { font-size: 0.82rem; color: var(--brand); font-weight: 700; margin-top: 4px; display:none; }
+
+    .btn-blue { background: linear-gradient(135deg,#3b82f6,#6366f1); color: white; }
+    .btn-blue:hover { opacity: .88; }
+
+    .mode-toggle { display:flex; gap:0; border: 1.5px solid var(--border); border-radius: var(--radius-sm); overflow:hidden; margin-bottom:14px; }
+    .mode-toggle label { flex:1; text-align:center; padding:9px 6px; font-size:0.78rem; font-weight:700; cursor:pointer; color:var(--muted); transition:.15s; }
+    .mode-toggle input[type=radio] { display:none; }
+    .mode-toggle input:checked + label { background: var(--grad); color:white; }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 480px) { .two-col { grid-template-columns: 1fr; } .stat-row { grid-template-columns: 1fr 1fr; } }
+</style>
+
+<div class="pg">
+    <div class="pg-header">
+        <h1><i class="fas fa-gear" style="color:var(--brand);margin-right:8px;"></i>Settings</h1>
+        <p>Manage account credentials and system data.</p>
+    </div>
+
+    {% if msg %}
+    <div class="alert alert-{{ msg_type }}">
+        <i class="fas {{ 'fa-check-circle' if msg_type == 'success' else 'fa-triangle-exclamation' }}"></i>
+        {{ msg }}
+    </div>
+    {% endif %}
+
+    <!-- DB OVERVIEW -->
+    <div class="section-label">System Overview</div>
+    <div class="stat-row" style="margin-bottom:24px;">
+        <div class="stat-box">
+            <div class="num">{{ total_products }}</div>
+            <div class="lbl">Products</div>
+        </div>
+        <div class="stat-box">
+            <div class="num">{{ total_sales_logs }}</div>
+            <div class="lbl">Sales Logs</div>
+        </div>
+        <div class="stat-box">
+            <div class="num">{{ total_stockin_logs }}</div>
+            <div class="lbl">Stock-In Logs</div>
+        </div>
+    </div>
+
+    <!-- CHANGE PASSWORD -->
+    <div class="section-label">Account Security</div>
+    <div class="card">
+        <div class="card-head">
+            <div class="ico"><i class="fas fa-lock"></i></div>
+            <strong>Change Password</strong>
+            <small>Current user: <strong>{{ admin_user }}</strong></small>
+        </div>
+        <div class="card-body">
+            <form method="POST">
+                <input type="hidden" name="action" value="change_password">
+                <div class="field">
+                    <label>Current Password</label>
+                    <input type="password" name="current_password" placeholder="Enter current password" required>
+                </div>
+                <div class="two-col">
+                    <div class="field">
+                        <label>New Password</label>
+                        <input type="password" name="new_password" placeholder="New password" required>
+                    </div>
+                    <div class="field">
+                        <label>Confirm New Password</label>
+                        <input type="password" name="confirm_password" placeholder="Repeat new password" required>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary" style="margin-top:6px;">
+                    <i class="fas fa-key"></i> Update Password
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- CHANGE USERNAME -->
+    <div class="card">
+        <div class="card-head">
+            <div class="ico"><i class="fas fa-user-pen"></i></div>
+            <strong>Change Username</strong>
+        </div>
+        <div class="card-body">
+            <form method="POST">
+                <input type="hidden" name="action" value="change_username">
+                <div class="two-col">
+                    <div class="field">
+                        <label>New Username</label>
+                        <input type="text" name="new_username" placeholder="Enter new username" required>
+                    </div>
+                    <div class="field">
+                        <label>Confirm with Password</label>
+                        <input type="password" name="password_for_user" placeholder="Current password" required>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary" style="margin-top:6px;">
+                    <i class="fas fa-user-check"></i> Update Username
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- BACKUP & RESTORE -->
+    <div class="section-label">Backup &amp; Restore</div>
+    <div class="card backup-zone">
+        <div class="card-head">
+            <div class="ico"><i class="fas fa-database"></i></div>
+            <strong>Backup &amp; Restore</strong>
+            <small>All products &amp; logs</small>
+        </div>
+        <div class="card-body">
+
+            <!-- BACKUP -->
+            <div style="margin-bottom:20px;">
+                <div style="font-size:0.78rem;color:var(--muted);margin-bottom:12px;line-height:1.5;">
+                    Download a complete snapshot of your database — all products, sales logs, and stock-in logs — as a <strong>.json</strong> file.
+                </div>
+                <a href="/settings/backup" class="btn btn-blue" style="text-decoration:none;">
+                    <i class="fas fa-download"></i> Download Backup
+                </a>
+                <span style="font-size:0.72rem;color:var(--muted);margin-left:12px;">
+                    {{ total_products }} products · {{ total_sales_logs }} sales · {{ total_stockin_logs }} stock-in records
+                </span>
+            </div>
+
+            <div style="height:1px;background:var(--border);margin-bottom:20px;"></div>
+
+            <!-- RESTORE -->
+            <div style="font-size:0.78rem;color:var(--muted);margin-bottom:12px;line-height:1.5;">
+                Upload a <strong>.json</strong> backup file to restore data. Choose a restore mode:
+            </div>
+
+            <form method="POST" action="/settings/restore" enctype="multipart/form-data"
+                  onsubmit="return confirmRestore(this);">
+
+                <!-- Mode Toggle -->
+                <div style="font-size:0.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px;">Restore Mode</div>
+                <div class="mode-toggle" style="margin-bottom:14px;">
+                    <input type="radio" name="restore_mode" id="modeMerge" value="merge" checked>
+                    <label for="modeMerge"><i class="fas fa-code-merge"></i> Merge <span style="font-weight:400;font-size:0.7rem;display:block;">Add new records only</span></label>
+                    <input type="radio" name="restore_mode" id="modeOverwrite" value="overwrite">
+                    <label for="modeOverwrite"><i class="fas fa-rotate"></i> Overwrite <span style="font-weight:400;font-size:0.7rem;display:block;">Replace all existing data</span></label>
+                </div>
+
+                <!-- File Drop Zone -->
+                <div class="restore-drop" id="dropZone" style="margin-bottom:14px;">
+                    <input type="file" name="restore_file" accept=".json" id="restoreFile"
+                           onchange="updateDropLabel(this)">
+                    <div class="drop-icon"><i class="fas fa-file-arrow-up"></i></div>
+                    <div class="drop-label">Click or drag a backup .json file here</div>
+                    <div class="drop-name" id="dropName"></div>
+                </div>
+
+                <!-- Password -->
+                <div class="field" style="margin-bottom:14px;">
+                    <label>Password to confirm restore</label>
+                    <input type="password" name="restore_password" placeholder="Enter your password" required>
+                </div>
+
+                <button type="submit" class="btn btn-blue">
+                    <i class="fas fa-upload"></i> Restore from Backup
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- DANGER ZONE -->
+    <div class="section-label" style="color:#b91c1c;">Danger Zone</div>
+    <div class="card danger-zone">
+        <div class="card-head">
+            <div class="ico"><i class="fas fa-triangle-exclamation"></i></div>
+            <strong>Clear Logs</strong>
+            <small style="color:#b91c1c;">Irreversible actions</small>
+        </div>
+        <div class="card-body">
+            <p style="font-size:0.82rem;color:var(--muted);margin-bottom:16px;">
+                These actions permanently delete log records. Product inventory is not affected.
+            </p>
+
+            <form method="POST" style="margin-bottom:16px;" onsubmit="return confirm('Clear ALL sales logs? This cannot be undone.');">
+                <input type="hidden" name="action" value="clear_sales_log">
+                <div style="display:flex;gap:10px;align-items:flex-end;">
+                    <div class="field" style="flex:1;margin:0;">
+                        <label>Password to confirm</label>
+                        <input type="password" name="danger_password" placeholder="Enter password" required>
+                    </div>
+                    <button type="submit" class="btn btn-danger">
+                        <i class="fas fa-trash"></i> Clear Sales Log ({{ total_sales_logs }} entries)
+                    </button>
+                </div>
+            </form>
+
+            <form method="POST" onsubmit="return confirm('Clear ALL stock-in logs? This cannot be undone.');">
+                <input type="hidden" name="action" value="clear_stock_in_log">
+                <div style="display:flex;gap:10px;align-items:flex-end;">
+                    <div class="field" style="flex:1;margin:0;">
+                        <label>Password to confirm</label>
+                        <input type="password" name="danger_password2" placeholder="Enter password" required>
+                    </div>
+                    <button type="submit" class="btn btn-danger">
+                        <i class="fas fa-trash"></i> Clear Stock-In Log ({{ total_stockin_logs }} entries)
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function updateDropLabel(input) {
+    const name = input.files[0]?.name || '';
+    const nameEl = document.getElementById('dropName');
+    const labelEl = document.querySelector('.drop-label');
+    if (name) {
+        nameEl.textContent = '📄 ' + name;
+        nameEl.style.display = 'block';
+        labelEl.style.display = 'none';
+        document.querySelector('.drop-icon').style.display = 'none';
+    }
+}
+
+function confirmRestore(form) {
+    const mode = form.restore_mode.value;
+    const file = document.getElementById('restoreFile').files[0];
+    if (!file) { alert('Please select a backup file first.'); return false; }
+    if (mode === 'overwrite') {
+        return confirm('⚠️ OVERWRITE MODE: This will DELETE all current products and logs before restoring. Are you absolutely sure?');
+    }
+    return confirm('Restore (merge) from backup? New records will be added without removing existing data.');
+}
+
+const dz = document.getElementById('dropZone');
+['dragover','dragenter'].forEach(e => dz.addEventListener(e, ev => { ev.preventDefault(); dz.classList.add('dragover'); }));
+['dragleave','drop'].forEach(e => dz.addEventListener(e, () => dz.classList.remove('dragover')));
+</script>
+{% endblock %}
 """
 
 # --- 7. ASSIGN DICTLOADER TO JINJA WORKFLOW ---

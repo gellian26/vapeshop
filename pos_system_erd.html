@@ -1,0 +1,162 @@
+
+<style>
+body { margin: 0; padding: 0; }
+#erd-wrap {
+  padding: 20px 0 8px;
+  font-family: var(--font-sans);
+}
+h2.erd-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin: 0 0 4px;
+  padding: 0;
+}
+p.erd-sub {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin: 0 0 16px;
+}
+.legend {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border-tertiary);
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.dot-purple { background: #AFA9EC; }
+.dot-teal   { background: #5DCAA5; }
+.dot-amber  { background: #EF9F27; }
+#erd svg { width: 100% !important; height: auto !important; }
+</style>
+
+<div id="erd-wrap">
+  <h2 class="erd-title">POS System — Entity Relationship Diagram</h2>
+  <p class="erd-sub">Core tables from <code>app.py</code> · FK = Foreign Key · PK = Primary Key</p>
+  <div id="erd"></div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot dot-purple"></div>Products &amp; Inventory</div>
+    <div class="legend-item"><div class="legend-dot dot-teal"></div>Stock In Log</div>
+    <div class="legend-item"><div class="legend-dot dot-amber"></div>Stock Out Log</div>
+    <div class="legend-item" style="margin-left:auto;font-style:italic;">||--o{ = one-to-many &nbsp;·&nbsp; }o--o{ = many-to-many</div>
+  </div>
+</div>
+
+<script type="module">
+import mermaid from 'https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs';
+
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+await document.fonts.ready;
+
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'base',
+  fontFamily: '"Anthropic Sans", sans-serif',
+  themeVariables: {
+    darkMode: dark,
+    fontSize: '13px',
+    fontFamily: '"Anthropic Sans", sans-serif',
+    lineColor: dark ? '#9c9a92' : '#73726c',
+    textColor: dark ? '#c2c0b6' : '#3d3d3a',
+    primaryColor: dark ? '#3C3489' : '#EEEDFE',
+    primaryTextColor: dark ? '#CECBF6' : '#3C3489',
+    primaryBorderColor: dark ? '#AFA9EC' : '#7F77DD',
+    secondaryColor: dark ? '#085041' : '#E1F5EE',
+    secondaryTextColor: dark ? '#9FE1CB' : '#0F6E56',
+    secondaryBorderColor: dark ? '#5DCAA5' : '#1D9E75',
+    tertiaryColor: dark ? '#633806' : '#FAEEDA',
+    tertiaryTextColor: dark ? '#FAC775' : '#633806',
+    tertiaryBorderColor: dark ? '#EF9F27' : '#BA7517',
+  },
+  er: {
+    diagramPadding: 24,
+    layoutDirection: 'TB',
+    minEntityWidth: 160,
+    minEntityHeight: 40,
+    entityPadding: 10,
+    useMaxWidth: true,
+  }
+});
+
+const diagram = `erDiagram
+  PRODUCT {
+    int id PK
+    string barcode
+    string name
+    string flavor
+    string type
+    string version
+    string mg
+    int qty
+    float cost
+    float price
+    float discount
+    string image
+    datetime date_added
+  }
+
+  STOCK_IN_LOG {
+    int id PK
+    datetime date
+    string name
+    string flavor
+    string category
+    int qty
+  }
+
+  STOCK_OUT_LOG {
+    int id PK
+    datetime date
+    string name
+    string flavor
+    string category
+    int qty
+    float price
+    float cost
+  }
+
+  PRODUCT ||--o{ STOCK_IN_LOG : "restocked as"
+  PRODUCT ||--o{ STOCK_OUT_LOG : "sold as"
+`;
+
+const { svg } = await mermaid.render('erd-svg', diagram);
+document.getElementById('erd').innerHTML = svg;
+
+document.querySelectorAll('#erd svg.erDiagram .node').forEach(node => {
+  const firstPath = node.querySelector('path[d]');
+  if (!firstPath) return;
+  const d = firstPath.getAttribute('d');
+  const nums = d.match(/-?[\d.]+/g)?.map(Number);
+  if (!nums || nums.length < 8) return;
+  const xs = [nums[0], nums[2], nums[4], nums[6]];
+  const ys = [nums[1], nums[3], nums[5], nums[7]];
+  const x = Math.min(...xs), y = Math.min(...ys);
+  const w = Math.max(...xs) - x, h = Math.max(...ys) - y;
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', x); rect.setAttribute('y', y);
+  rect.setAttribute('width', w); rect.setAttribute('height', h);
+  rect.setAttribute('rx', '8');
+  for (const a of ['fill', 'stroke', 'stroke-width', 'class', 'style']) {
+    if (firstPath.hasAttribute(a)) rect.setAttribute(a, firstPath.getAttribute(a));
+  }
+  firstPath.replaceWith(rect);
+});
+
+document.querySelectorAll('#erd svg.erDiagram .row-rect-odd path, #erd svg.erDiagram .row-rect-even path').forEach(p => {
+  p.setAttribute('stroke', 'none');
+});
+</script>
