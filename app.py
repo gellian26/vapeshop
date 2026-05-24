@@ -121,27 +121,6 @@ def dashboard():
     total_qty = sum(p.qty for p in products_all)
     low_stock_count = Product.query.filter(Product.qty < 5).count()
 
-    months_labels, sales_trend, purchase_trend = [], [], []
-    for i in range(5, -1, -1):
-        target_date = now - timedelta(days=i*30)
-        months_labels.append(target_date.strftime("%b '%y"))
-        s_val = db.session.query(func.sum(StockOutLog.qty)).filter(
-            extract('month', StockOutLog.date) == target_date.month,
-            extract('year', StockOutLog.date) == target_date.year
-        ).scalar() or 0
-        p_val = db.session.query(func.sum(StockInLog.qty)).filter(
-            extract('month', StockInLog.date) == target_date.month,
-            extract('year', StockInLog.date) == target_date.year
-        ).scalar() or 0
-        sales_trend.append(int(s_val))
-        purchase_trend.append(int(p_val))
-
-    top_selling = db.session.query(StockOutLog.name, func.sum(StockOutLog.qty).label('total')).group_by(StockOutLog.name).order_by(desc('total')).limit(5).all()
-
-    total_sales_all = db.session.query(func.sum(StockOutLog.qty)).scalar() or 1
-    cat_sales = db.session.query(StockOutLog.category, func.sum(StockOutLog.qty)).group_by(StockOutLog.category).all()
-    category_progress = [{'name': c[0].capitalize() if c[0] else "Other", 'percentage': round((c[1]/total_sales_all)*100)} for c in cat_sales]
-
     stats = {
         'total_qty': total_qty, 
         'low_stock': low_stock_count,
@@ -149,13 +128,6 @@ def dashboard():
         'sales_today_count': sales_today_count,
         'day_name': day_name,
         'month_name': month_name,
-        'bar_labels': months_labels, 
-        'bar_sales': sales_trend, 
-        'bar_purchases': purchase_trend,
-        'pie_labels': [item[0] for item in top_selling], 
-        'pie_values': [int(item[1]) for item in top_selling],
-        'stock_alerts': Product.query.filter(Product.qty < 10).order_by(Product.qty.asc()).limit(5).all(),
-        'cat_progress': category_progress
     }
     return render_template('dashboard.html', stats=stats)
 
@@ -814,9 +786,6 @@ TEMPLATES["dashboard.html"] = """
 {% extends "base.html" %}
 
 {% block content %}
-<!-- Include Chart.js -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
 <style>
     :root {
         --text-dark: #1a2b4b;
@@ -832,7 +801,6 @@ TEMPLATES["dashboard.html"] = """
         overflow-x: hidden;
     }
 
-    /* --- TOP HEADER SECTION --- */
     .dashboard-header {
         display: flex;
         justify-content: space-between;
@@ -871,12 +839,10 @@ TEMPLATES["dashboard.html"] = """
         color: white;
     }
 
-    /* --- 1. TOP METRIC CARDS --- */
     .metrics-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
         gap: 15px;
-        margin-bottom: 20px;
     }
 
     .m-card {
@@ -889,63 +855,10 @@ TEMPLATES["dashboard.html"] = """
 
     .m-card span { display: block; color: var(--text-gray); font-weight: 700; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 10px; letter-spacing: 0.5px; }
     .m-card h2 { margin: 0; font-size: 1.6rem; color: var(--blue-main); font-weight: 800; }
-
-    /* --- 2. MIDDLE CHARTS SECTION --- */
-    .charts-grid {
-        display: grid;
-        grid-template-columns: 1.8fr 1.2fr;
-        gap: 20px;
-        margin-bottom: 20px;
-        align-items: start;
-    }
-
-    .chart-container {
-        background: white;
-        padding: 20px;
-        border-radius: 12px;
-        border: 1px solid var(--border-color);
-        min-height: 350px;
-        position: relative;
-    }
-
-    .chart-header { font-weight: 800; color: var(--text-dark); margin-bottom: 15px; display: block; }
-
-    /* --- 3. BOTTOM SECTION --- */
-    .details-grid {
-        display: grid;
-        grid-template-columns: 1.8fr 1.2fr;
-        gap: 20px;
-    }
-
-    .table-card, .category-card {
-        background: white;
-        padding: 20px;
-        border-radius: 12px;
-        border: 1px solid var(--border-color);
-    }
-
-    .table-wrap { width: 100%; overflow-x: auto; }
-    .alert-table { width: 100%; border-collapse: collapse; min-width: 400px; }
-    .alert-table th { text-align: left; color: var(--text-gray); font-size: 0.75rem; padding-bottom: 10px; border-bottom: 1px solid #f1f5f9; }
-    .alert-table td { padding: 12px 0; border-bottom: 1px solid #f7fafc; font-size: 0.85rem; }
-
-    .badge-cat { background: #e0e7ff; color: #4338ca; padding: 3px 8px; border-radius: 5px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; }
-
-    /* Category Bars */
-    .cat-item { margin-bottom: 15px; }
-    .cat-info { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 0.8rem; font-weight: 700; }
-    .progress-bg { height: 8px; background: #edf2f7; border-radius: 10px; }
-    .progress-fill { height: 100%; border-radius: 10px; transition: width 1s ease-in-out; }
-
-    @media (max-width: 1024px) {
-        .charts-grid, .details-grid { grid-template-columns: 1fr; }
-        .chart-container { min-height: 300px; }
-    }
 </style>
 
 <div class="dashboard-wrapper">
-    
-    <!-- DASHBOARD HEADER -->
+
     <div class="dashboard-header">
         <h1>Dashboard</h1>
         <a href="/history" class="history-btn">
@@ -953,158 +866,26 @@ TEMPLATES["dashboard.html"] = """
         </a>
     </div>
 
-    <!-- TOP CARDS -->
     <div class="metrics-grid">
         <div class="m-card">
             <span>Current Stock</span>
             <h2>{{ stats.total_qty }}</h2>
         </div>
-        
         <div class="m-card">
-            <!-- Dynamic Day: Resets at Midnight -->
             <span>Sales Today ({{ stats.day_name }})</span>
             <h2>{{ stats.sales_today_count }}</h2>
         </div>
-        
         <div class="m-card">
-            <!-- Dynamic Month: Resets on the 1st -->
             <span>Revenue for {{ stats.month_name }}</span>
             <h2 style="color: var(--purple-brand);">{{ stats.revenue_month }}</h2>
         </div>
-        
         <div class="m-card">
             <span>Low Stock Items</span>
             <h2 style="color: #ef4444;">{{ stats.low_stock }}</h2>
         </div>
     </div>
 
-    <!-- CHARTS -->
-    <div class="charts-grid">
-        <div class="chart-container">
-            <span class="chart-header">Sales and Purchases Trend</span>
-            <div style="height: 280px;">
-                <canvas id="barChart"></canvas>
-            </div>
-        </div>
-        <div class="chart-container">
-            <span class="chart-header">Top Selling Products</span>
-            <div style="height: 280px;">
-                <canvas id="pieChart"></canvas>
-            </div>
-        </div>
-    </div>
-
-    <!-- BOTTOM SECTION -->
-    <div class="details-grid">
-        
-        <!-- DYNAMIC STOCK ALERTS -->
-        <div class="table-card">
-            <span class="chart-header">Stock Alert</span>
-            <div class="table-wrap">
-                <table class="alert-table">
-                    <thead>
-                        <tr>
-                            <th>Product</th>
-                            <th>Category</th>
-                            <th>Quantity</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for prod in stats.stock_alerts %}
-                        <tr>
-                            <td><strong>{{ prod.name }}</strong> <small>{{ prod.flavor }}</small></td>
-                            <td><span class="badge-cat">{{ prod.type }}</span></td>
-                            <td style="color: #ef4444; font-weight:bold;">{{ prod.qty }} left</td>
-                        </tr>
-                        {% else %}
-                        <tr>
-                            <td colspan="3" style="text-align: center; color: var(--text-gray);">All items are well stocked.</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- DYNAMIC SALES BY CATEGORY -->
-        <div class="category-card">
-            <span class="chart-header">Sales by Categories</span>
-            {% for cat in stats.cat_progress %}
-            <div class="cat-item">
-                <div class="cat-info">
-                    <span>{{ cat.name }}</span>
-                    <small>{{ cat.percentage }}%</small>
-                </div>
-                <div class="progress-bg">
-                    <div class="progress-fill" 
-                         style="width: {{ cat.percentage }}%; background: var(--blue-main);">
-                    </div>
-                </div>
-            </div>
-            {% else %}
-            <p style="font-size: 0.8rem; color: var(--text-gray);">No category data available yet.</p>
-            {% endfor %}
-        </div>
-    </div>
 </div>
-
-<script>
-    const chartOptions = {
-        maintainAspectRatio: false,
-        responsive: true,
-        plugins: {
-            legend: { 
-                position: 'bottom', 
-                labels: { boxWidth: 12, font: { size: 11, weight: '600' } } 
-            }
-        },
-        scales: {
-            y: { beginAtZero: true, grid: { display: false } },
-            x: { grid: { display: false } }
-        }
-    };
-
-    // Bar Chart
-    new Chart(document.getElementById('barChart'), {
-        type: 'bar',
-        data: {
-            labels: {{ stats.bar_labels | tojson }},
-            datasets: [{
-                label: 'Sales (Units)',
-                data: {{ stats.bar_sales | tojson }},
-                backgroundColor: '#4e73df',
-                borderRadius: 4
-            }, {
-                label: 'Restocks (Units)',
-                data: {{ stats.bar_purchases | tojson }},
-                backgroundColor: '#1cc88a',
-                borderRadius: 4
-            }]
-        },
-        options: chartOptions
-    });
-
-    // Pie Chart
-    new Chart(document.getElementById('pieChart'), {
-        type: 'doughnut',
-        data: {
-            labels: {{ stats.pie_labels | tojson }},
-            datasets: [{
-                data: {{ stats.pie_values | tojson }},
-                backgroundColor: ['#4e73df', '#1cc88a', '#36b9cc', '#f6c23e', '#e74a3b'],
-                borderWidth: 0
-            }]
-        },
-        options: {
-            maintainAspectRatio: false,
-            responsive: true,
-            plugins: {
-                legend: { position: 'bottom', labels: { boxWidth: 10, padding: 15 } }
-            },
-            cutout: '70%'
-        }
-    });
-</script>
 {% endblock %}
 """
 
