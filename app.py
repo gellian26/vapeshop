@@ -2792,9 +2792,9 @@ TEMPLATES["analytics.html"] = """
                 <table class="rank-table">
                     <thead><tr><th>#</th><th>Product</th><th>Revenue</th><th>Units</th></tr></thead>
                     <tbody>
-                    {% for i, item in enumerate(top_by_revenue) %}
+                    {% for item in top_by_revenue %}
                     <tr>
-                        <td><span class="rank-num {{ 'gold' if i==0 else 'silver' if i==1 else 'bronze' if i==2 else '' }}">{{ i+1 }}</span></td>
+                        <td><span class="rank-num {{ 'gold' if loop.index0==0 else 'silver' if loop.index0==1 else 'bronze' if loop.index0==2 else '' }}">{{ loop.index }}</span></td>
                         <td>
                             <strong style="font-size:.83rem;">{{ item.name }}</strong>
                             {% if item.flavor %}<br><small style="color:var(--brand);">{{ item.flavor }}</small>{% endif %}
@@ -2812,9 +2812,9 @@ TEMPLATES["analytics.html"] = """
                 <table class="rank-table">
                     <thead><tr><th>#</th><th>Product</th><th>Units</th><th>Revenue</th></tr></thead>
                     <tbody>
-                    {% for i, item in enumerate(top_by_units) %}
+                    {% for item in top_by_units %}
                     <tr>
-                        <td><span class="rank-num {{ 'gold' if i==0 else 'silver' if i==1 else 'bronze' if i==2 else '' }}">{{ i+1 }}</span></td>
+                        <td><span class="rank-num {{ 'gold' if loop.index0==0 else 'silver' if loop.index0==1 else 'bronze' if loop.index0==2 else '' }}">{{ loop.index }}</span></td>
                         <td>
                             <strong style="font-size:.83rem;">{{ item.name }}</strong>
                             {% if item.flavor %}<br><small style="color:var(--brand);">{{ item.flavor }}</small>{% endif %}
@@ -2879,9 +2879,9 @@ TEMPLATES["analytics.html"] = """
                 <table class="rank-table">
                     <thead><tr><th>#</th><th>Product</th><th>Units Sold</th><th>Revenue</th><th>Profit</th><th>Margin</th><th>Rating</th></tr></thead>
                     <tbody>
-                    {% for i, p in enumerate(high_performers) %}
+                    {% for p in high_performers %}
                     <tr>
-                        <td><span class="rank-num {{ 'gold' if i==0 else 'silver' if i==1 else 'bronze' if i==2 else '' }}">{{ i+1 }}</span></td>
+                        <td><span class="rank-num {{ 'gold' if loop.index0==0 else 'silver' if loop.index0==1 else 'bronze' if loop.index0==2 else '' }}">{{ loop.index }}</span></td>
                         <td>
                             <strong style="font-size:.83rem;">{{ p.name }}</strong>
                             {% if p.flavor %}<br><small style="color:var(--brand);">{{ p.flavor }}</small>{% endif %}
