@@ -66,17 +66,20 @@ def require_login():
     if 'logged_in' not in session and request.endpoint not in allowed_routes:
         return redirect(url_for('login'))
 
-# --- 4. HELPERS ---
+# --- 4. HELPERS (FIXED: Added missing fields) ---
 def get_products_dict():
     products = Product.query.all()
     return {str(p.id): {
         "id": p.id,
         "barcode": p.barcode or '',
         "name": p.name,
-        "flavor": p.flavor,
-        "type": p.type,
-        "qty": p.qty,
-        "price": p.price,
+        "flavor": p.flavor or '',
+        "type": p.type or '',
+        "version": p.version or '',  # Added
+        "mg": p.mg or '',            # Added
+        "qty": p.qty or 0,
+        "cost": p.cost or 0.0,       # Added
+        "price": p.price or 0.0,
         "image": p.image
     } for p in products}
 
@@ -86,15 +89,10 @@ def get_products_dict():
 def dashboard():
     now = datetime.now()
     today_str = now.strftime('%Y-%m-%d')
-    
-    # Dynamic Day and Month names
     day_name = now.strftime('%A')
     month_name = now.strftime('%B')
 
-    # Sales Today (Auto-resets at midnight)
     sales_today_count = StockOutLog.query.filter(func.date(StockOutLog.date) == today_str).count()
-    
-    # Monthly Revenue (Auto-resets on the 1st)
     rev_month = db.session.query(func.sum(StockOutLog.qty * StockOutLog.price)).filter(
         extract('month', StockOutLog.date) == now.month,
         extract('year', StockOutLog.date) == now.year
@@ -104,7 +102,6 @@ def dashboard():
     total_qty = sum(p.qty for p in products_all)
     low_stock_count = Product.query.filter(Product.qty < 5).count()
 
-    # Chart Trends
     months_labels, sales_trend, purchase_trend = [], [], []
     for i in range(5, -1, -1):
         target_date = now - timedelta(days=i*30)
@@ -139,14 +136,12 @@ def dashboard():
 
 @app.route('/history')
 def history():
-    # 1. Daily Revenue
     daily_history = db.session.query(
         func.date(StockOutLog.date).label('day'),
         func.count(StockOutLog.id).label('count'),
         func.sum(StockOutLog.qty * StockOutLog.price).label('revenue')
     ).group_by(func.date(StockOutLog.date)).order_by(desc('day')).limit(60).all()
 
-    # 2. Monthly Revenue
     monthly_history = db.session.query(
         extract('year', StockOutLog.date).label('year'),
         extract('month', StockOutLog.date).label('month'),
@@ -162,8 +157,7 @@ def history():
 
 @app.route('/inventory')
 def inventory():
-    categories = ['pods', 'juice', 'disposable', 'device', 'cartridge']
-    return render_template('inventory.html', products=get_products_dict(), categories=categories)
+    return render_template('inventory.html', products=get_products_dict())
 
 @app.route('/api/product/barcode/<barcode>')
 def get_product_by_barcode(barcode):
@@ -184,15 +178,25 @@ def products():
 
         name = request.form.get('name')
         price = float(request.form.get('price') or 0)
+        cost = float(request.form.get('cost') or 0)
         barcode = request.form.get('barcode', '').strip() or str(int(time.time()))
 
         if p_id:
             p = Product.query.get(p_id)
             p.name, p.price, p.barcode = name, price, barcode
-            p.flavor, p.type, p.version, p.mg = request.form.get('flavor'), request.form.get('type'), request.form.get('version'), request.form.get('mg')
-            p.cost = float(request.form.get('cost') or 0)
+            p.flavor = request.form.get('flavor')
+            p.type = request.form.get('type')
+            p.version = request.form.get('version')
+            p.mg = request.form.get('mg')
+            p.cost = cost
         else:
-            new_p = Product(name=name, price=price, barcode=barcode, qty=int(request.form.get('quantity') or 0), type=request.form.get('type'), flavor=request.form.get('flavor'), cost=float(request.form.get('cost') or 0), version=request.form.get('version'), mg=request.form.get('mg'))
+            new_p = Product(name=name, price=price, barcode=barcode, 
+                            qty=int(request.form.get('quantity') or 0), 
+                            type=request.form.get('type'), 
+                            flavor=request.form.get('flavor'), 
+                            cost=cost, 
+                            version=request.form.get('version'), 
+                            mg=request.form.get('mg'))
             db.session.add(new_p)
         db.session.commit()
         return redirect(url_for('products'))
@@ -238,19 +242,15 @@ def reports():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        if username == ADMIN_USER and password == ADMIN_PASS:
-            session['logged_in'] = True
-            return redirect(url_for('dashboard'))
+        if request.form.get('username') == ADMIN_USER and request.form.get('password') == ADMIN_PASS:
+            session['logged_in'] = True; return redirect(url_for('dashboard'))
         else:
             flash("Incorrect password or username", "danger")
     return render_template('login.html')
 
 @app.route('/logout')
 def logout():
-    session.clear()
-    return redirect(url_for('login'))
+    session.clear(); return redirect(url_for('login'))
 
 if __name__ == '__main__':
     with app.app_context(): db.create_all()
