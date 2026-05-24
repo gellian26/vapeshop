@@ -272,6 +272,12 @@ def reports():
     return render_template('reports.html', movement=movement, revenue=sum(l.qty*l.price for l in logs_out), sales_count=len(logs_out), date=today.strftime("%B %d, %Y"), now=datetime.now().strftime("%H:%M"), period=period, report_label="Inventory Audit Report", low_stocks=low_stocks)
 
 
+
+@app.route('/api/low_stock')
+def api_low_stock():
+    items = Product.query.filter(Product.qty < 5).order_by(Product.qty.asc()).limit(10).all()
+    return jsonify([{"name": p.name, "flavor": p.flavor or "", "qty": p.qty} for p in items])
+
 @app.route('/analytics')
 def analytics():
     now = datetime.now()
@@ -422,7 +428,7 @@ TEMPLATES["base.html"] = """
     
     <!-- Professional Font & Icons -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     
     <!-- Barcode Scanner Library -->
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -431,7 +437,7 @@ TEMPLATES["base.html"] = """
         :root {
             --navy: #162135;
             --purple: #705194;
-            --bg-body: #f0f2f8;
+            --bg-body: #f8f7ff;
             --sidebar-width: 260px;
             --text-main: #1e293b;
             --text-muted: #64748b;
@@ -442,7 +448,7 @@ TEMPLATES["base.html"] = """
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body { 
-            font-family: 'Outfit', sans-serif; 
+            font-family: 'Outfit', 'Inter', sans-serif; 
             background: var(--bg-body); 
             color: var(--text-main);
             display: flex; 
@@ -784,108 +790,203 @@ TEMPLATES["base.html"] = """
 
 TEMPLATES["dashboard.html"] = """
 {% extends "base.html" %}
-
 {% block content %}
 <style>
-    :root {
-        --text-dark: #1a2b4b;
-        --text-gray: #8492a6;
-        --blue-main: #4e73df;
-        --border-color: #edf2f7;
-        --purple-brand: #705194;
-    }
+:root {
+    --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
+    --orange:#f59e0b; --blue:#3b82f6;
+    --grad:linear-gradient(135deg,#705194,#9b6fc4);
+    --radius:16px; --radius-sm:10px;
+    --border:#e8e4f0; --text:#1e293b; --muted:#64748b; --bg:#f8f7ff;
+}
+*{box-sizing:border-box;}
+.pg{max-width:1100px;margin:0 auto;padding:0 0 60px;}
+.pg-header{margin-bottom:28px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;}
+.pg-header h1{font-size:1.7rem;font-weight:800;color:var(--text);}
+.pg-header p{color:var(--muted);font-size:0.9rem;margin-top:4px;}
+.history-btn{background:var(--grad);color:white;padding:9px 18px;border-radius:50px;text-decoration:none;font-size:0.82rem;font-weight:700;display:flex;align-items:center;gap:8px;transition:.2s;border:none;cursor:pointer;}
+.history-btn:hover{opacity:.88;transform:translateY(-1px);}
 
-    .dashboard-wrapper {
-        width: 100%;
-        max-width: 100%;
-        overflow-x: hidden;
-    }
+/* KPI CARDS */
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:28px;}
+.kpi-card{background:white;border-radius:var(--radius);border:1.5px solid var(--border);padding:20px 22px;box-shadow:0 2px 10px rgba(112,81,148,.05);}
+.kpi-card .kpi-label{font-size:0.72rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700;margin-bottom:8px;}
+.kpi-card .kpi-val{font-size:1.65rem;font-weight:800;color:var(--text);line-height:1;}
+.kpi-card .kpi-sub{font-size:0.78rem;color:var(--muted);margin-top:6px;}
+.kpi-card .kpi-ico{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1rem;margin-bottom:12px;}
+.kpi-ico.purple{background:#f3eeff;color:var(--brand);}
+.kpi-ico.green{background:#ecfdf5;color:var(--green);}
+.kpi-ico.orange{background:#fffbeb;color:var(--orange);}
+.kpi-ico.blue{background:#eff6ff;color:var(--blue);}
+.kpi-ico.red{background:#fef2f2;color:var(--red);}
 
-    .dashboard-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 25px;
-        flex-wrap: wrap;
-        gap: 15px;
-    }
+/* OVERVIEW SECTION */
+.overview-row{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px;}
+.chart-card{background:white;border-radius:var(--radius);border:1.5px solid var(--border);box-shadow:0 2px 10px rgba(112,81,148,.05);overflow:hidden;}
+.chart-head{display:flex;align-items:center;justify-content:space-between;padding:18px 22px 0;gap:10px;}
+.chart-head-left{display:flex;align-items:center;gap:12px;}
+.chart-ico{width:36px;height:36px;background:var(--grad);border-radius:9px;display:flex;align-items:center;justify-content:center;color:white;font-size:.9rem;flex-shrink:0;}
+.chart-title{font-size:.95rem;font-weight:700;color:var(--text);}
+.chart-sub{font-size:.76rem;color:var(--muted);}
+.chart-body{padding:18px 22px 22px;}
 
-    .dashboard-header h1 {
-        margin: 0;
-        font-weight: 800;
-        color: var(--text-dark);
-        font-size: 1.8rem;
-    }
+/* QUICK LINKS */
+.quick-links{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;}
+.ql-item{display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:12px;border:1.5px solid var(--border);text-decoration:none;background:white;transition:.2s;color:var(--text);}
+.ql-item:hover{border-color:var(--brand);background:var(--brand-light);transform:translateY(-1px);}
+.ql-ico{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0;}
+.ql-label{font-size:.85rem;font-weight:700;}
+.ql-desc{font-size:.73rem;color:var(--muted);}
 
-    .history-btn {
-        background: var(--purple-brand);
-        color: white;
-        padding: 10px 20px;
-        border-radius: 10px;
-        text-decoration: none;
-        font-size: 0.85rem;
-        font-weight: 700;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 12px rgba(112, 81, 148, 0.2);
-    }
+/* LOW STOCK TABLE */
+.rank-table{width:100%;border-collapse:collapse;}
+.rank-table th{text-align:left;padding:10px 14px;font-size:.7rem;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:700;border-bottom:1.5px solid var(--border);}
+.rank-table td{padding:10px 14px;border-bottom:1px solid #f3f0fa;font-size:.84rem;vertical-align:middle;}
+.rank-table tr:last-child td{border-bottom:none;}
+.badge-pill{padding:3px 10px;border-radius:50px;font-size:.7rem;font-weight:700;}
+.badge-red{background:#fef2f2;color:#b91c1c;}
+.badge-orange{background:#fffbeb;color:#92400e;}
+.badge-green{background:#ecfdf5;color:#065f46;}
 
-    .history-btn:hover {
-        background: var(--text-dark);
-        transform: translateY(-2px);
-        box-shadow: 0 6px 15px rgba(26, 43, 75, 0.3);
-        color: white;
-    }
-
-    .metrics-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 15px;
-    }
-
-    .m-card {
-        background: white;
-        padding: 20px;
-        border-radius: 12px;
-        border: 1px solid var(--border-color);
-        box-shadow: 0 2px 10px rgba(0,0,0,0.02);
-    }
-
-    .m-card span { display: block; color: var(--text-gray); font-weight: 700; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 10px; letter-spacing: 0.5px; }
-    .m-card h2 { margin: 0; font-size: 1.6rem; color: var(--blue-main); font-weight: 800; }
+@media(max-width:900px){.kpi-grid{grid-template-columns:repeat(2,1fr);}.overview-row{grid-template-columns:1fr;}}
+@media(max-width:500px){.kpi-grid{grid-template-columns:1fr;}.quick-links{grid-template-columns:1fr;}}
 </style>
 
-<div class="dashboard-wrapper">
-
-    <div class="dashboard-header">
-        <h1>Dashboard</h1>
+<div class="pg">
+    <div class="pg-header">
+        <div>
+            <h1><i class="fa-solid fa-chart-pie" style="color:var(--brand);margin-right:10px;"></i>Dashboard</h1>
+            <p>Good {{ stats.day_name }} — here's your store overview</p>
+        </div>
         <a href="/history" class="history-btn">
-            <i class="fa-solid fa-clock-rotate-left"></i> View Business History
+            <i class="fa-solid fa-clock-rotate-left"></i> Business History
         </a>
     </div>
 
-    <div class="metrics-grid">
-        <div class="m-card">
-            <span>Current Stock</span>
-            <h2>{{ stats.total_qty }}</h2>
+    <!-- KPI CARDS -->
+    <div class="kpi-grid">
+        <div class="kpi-card">
+            <div class="kpi-ico purple"><i class="fas fa-boxes-stacked"></i></div>
+            <div class="kpi-label">Current Stock</div>
+            <div class="kpi-val">{{ stats.total_qty }}</div>
+            <div class="kpi-sub">Total units in inventory</div>
         </div>
-        <div class="m-card">
-            <span>Sales Today ({{ stats.day_name }})</span>
-            <h2>{{ stats.sales_today_count }}</h2>
+        <div class="kpi-card">
+            <div class="kpi-ico blue"><i class="fas fa-cart-shopping"></i></div>
+            <div class="kpi-label">Sales Today ({{ stats.day_name }})</div>
+            <div class="kpi-val">{{ stats.sales_today_count }}</div>
+            <div class="kpi-sub">Transactions recorded today</div>
         </div>
-        <div class="m-card">
-            <span>Revenue for {{ stats.month_name }}</span>
-            <h2 style="color: var(--purple-brand);">{{ stats.revenue_month }}</h2>
+        <div class="kpi-card">
+            <div class="kpi-ico green"><i class="fas fa-peso-sign"></i></div>
+            <div class="kpi-label">Revenue — {{ stats.month_name }}</div>
+            <div class="kpi-val" style="font-size:1.3rem;">{{ stats.revenue_month }}</div>
+            <div class="kpi-sub">Monthly earnings so far</div>
         </div>
-        <div class="m-card">
-            <span>Low Stock Items</span>
-            <h2 style="color: #ef4444;">{{ stats.low_stock }}</h2>
+        <div class="kpi-card">
+            <div class="kpi-ico red"><i class="fas fa-triangle-exclamation"></i></div>
+            <div class="kpi-label">Low Stock Items</div>
+            <div class="kpi-val" style="color:var(--red);">{{ stats.low_stock }}</div>
+            <div class="kpi-sub">Products below 5 units</div>
         </div>
     </div>
 
+    <!-- QUICK OVERVIEW -->
+    <div class="overview-row">
+        <!-- QUICK NAVIGATION -->
+        <div class="chart-card">
+            <div class="chart-head">
+                <div class="chart-head-left">
+                    <div class="chart-ico"><i class="fas fa-bolt"></i></div>
+                    <div>
+                        <div class="chart-title">Quick Actions</div>
+                        <div class="chart-sub">Jump to any section</div>
+                    </div>
+                </div>
+            </div>
+            <div class="chart-body">
+                <div class="quick-links">
+                    <a href="/inventory" class="ql-item">
+                        <div class="ql-ico" style="background:#eff6ff;color:var(--blue);"><i class="fas fa-boxes-stacked"></i></div>
+                        <div><div class="ql-label">Inventory</div><div class="ql-desc">View stock levels</div></div>
+                    </a>
+                    <a href="/sales" class="ql-item">
+                        <div class="ql-ico" style="background:#ecfdf5;color:var(--green);"><i class="fas fa-cart-shopping"></i></div>
+                        <div><div class="ql-label">Record Sale</div><div class="ql-desc">Log a new transaction</div></div>
+                    </a>
+                    <a href="/products" class="ql-item">
+                        <div class="ql-ico" style="background:#f3eeff;color:var(--brand);"><i class="fas fa-tags"></i></div>
+                        <div><div class="ql-label">Products</div><div class="ql-desc">Manage catalog</div></div>
+                    </a>
+                    <a href="/reports" class="ql-item">
+                        <div class="ql-ico" style="background:#fffbeb;color:var(--orange);"><i class="fas fa-file-waveform"></i></div>
+                        <div><div class="ql-label">Reports</div><div class="ql-desc">Inventory audit</div></div>
+                    </a>
+                    <a href="/analytics" class="ql-item">
+                        <div class="ql-ico" style="background:#fdf2f8;color:#db2777;"><i class="fas fa-chart-line"></i></div>
+                        <div><div class="ql-label">Analytics</div><div class="ql-desc">Sales insights</div></div>
+                    </a>
+                    <a href="/history" class="ql-item">
+                        <div class="ql-ico" style="background:#f0fdf4;color:#16a34a;"><i class="fas fa-clock-rotate-left"></i></div>
+                        <div><div class="ql-label">History</div><div class="ql-desc">Past transactions</div></div>
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- LOW STOCK ALERT -->
+        <div class="chart-card">
+            <div class="chart-head">
+                <div class="chart-head-left">
+                    <div class="chart-ico" style="background:linear-gradient(135deg,#ef4444,#dc2626);"><i class="fas fa-triangle-exclamation"></i></div>
+                    <div>
+                        <div class="chart-title">Low Stock Alert</div>
+                        <div class="chart-sub">Items below 5 units — restock soon</div>
+                    </div>
+                </div>
+            </div>
+            <div class="chart-body" style="padding-top:10px;">
+                <table class="rank-table">
+                    <thead><tr><th>Product</th><th>Flavor</th><th>Qty</th><th>Status</th></tr></thead>
+                    <tbody id="lowStockBody">
+                        <tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;"><i class="fas fa-spinner fa-spin"></i> Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
 </div>
+
+<script>
+fetch('/inventory').then(r => r.text()).then(html => {
+    // Parse the inventory data from the page's product data
+});
+
+// Load low stock items via API
+async function loadLowStock() {
+    const tbody = document.getElementById('lowStockBody');
+    try {
+        const resp = await fetch('/api/low_stock');
+        const data = await resp.json();
+        if (!data.length) {
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px;"><i class="fas fa-check-circle" style="color:var(--green);"></i> All items well stocked!</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.map(p => `
+            <tr>
+                <td><strong>${p.name}</strong></td>
+                <td style="color:var(--brand);font-weight:600;">${p.flavor || '—'}</td>
+                <td><strong style="color:var(--red);">${p.qty}</strong></td>
+                <td><span class="badge-pill ${p.qty === 0 ? 'badge-red' : 'badge-orange'}">${p.qty === 0 ? 'Out of Stock' : 'Critical Low'}</span></td>
+            </tr>
+        `).join('');
+    } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:18px;">Unable to load stock data.</td></tr>';
+    }
+}
+loadLowStock();
+</script>
+
 {% endblock %}
 """
 
@@ -895,8 +996,13 @@ TEMPLATES["inventory.html"] = """
 {% block content %}
 <style>
     :root {
-        --purple-grad: linear-gradient(135deg, #705194 0%, #553c7b 100%);
-    }
+    --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
+    --orange:#f59e0b; --blue:#3b82f6;
+    --grad:linear-gradient(135deg,#705194,#9b6fc4);
+    --radius:16px; --radius-sm:10px;
+    --border:#e8e4f0; --text:#1e293b; --muted:#64748b; --bg:#f8f7ff;
+}
+    *{box-sizing:border-box;}
 
     .inventory-container {
         max-width: 100%;
@@ -912,8 +1018,8 @@ TEMPLATES["inventory.html"] = """
         margin-bottom: 25px;
     }
 
-    .header-title h1 { font-size: 1.8rem; font-weight: 800; color: #1a2b4b; margin: 0; }
-    .header-title p { color: #8492a6; margin: 3px 0 0 0; font-size: 0.9rem; }
+    .header-title h1 { font-size: 1.7rem; font-weight: 800; color: var(--text); margin: 0; letter-spacing: -0.5px; }
+    .header-title p { color: var(--muted); margin: 4px 0 0; font-size: 0.88rem; }
 
     .notif-bell {
         background: white; width: 45px; height: 45px; border-radius: 50%;
@@ -923,8 +1029,8 @@ TEMPLATES["inventory.html"] = """
 
     /* --- LIST CARD --- */
     .list-card {
-        background: white; border-radius: 20px; padding: 25px;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.03); border: 1px solid #edf2f7;
+        background: white; border-radius: var(--radius); padding: 25px;
+        box-shadow: 0 2px 10px rgba(112,81,148,.05); border: 1.5px solid var(--border);
     }
 
     .list-header {
@@ -953,7 +1059,7 @@ TEMPLATES["inventory.html"] = """
     .img-cell { width: 48px; height: 48px; border-radius: 10px; background: #f1f5f9; overflow: hidden; }
     .img-cell img { width: 100%; height: 100%; object-fit: cover; }
 
-    .name-cell strong { display: block; color: #1a2b4b; font-size: 0.9rem; }
+    .name-cell strong { display: block; color: var(--text); font-size: 0.9rem; font-weight: 700; }
     .flavor-cell { color: #705194; font-weight: 600; font-size: 0.85rem; }
 
     .badge-cat { background: #e0e7ff; color: #4338ca; padding: 5px 12px; border-radius: 50px; font-size: 0.65rem; font-weight: 800; text-transform: uppercase; }
@@ -1261,29 +1367,26 @@ TEMPLATES["products.html"] = """
     *, *::before, *::after { box-sizing: border-box; }
 
     :root {
-        --brand: #705194;
-        --brand-dark: #553c7b;
-        --brand-light: #f3e8ff;
-        --grad: linear-gradient(135deg, #705194 0%, #553c7b 100%);
-        --surface: #ffffff;
-        --bg: #f5f4f8;
-        --border: #e8e3f0;
-        --text: #1a1a2e;
-        --muted: #7a7a9a;
-        --green: #10b981;
-        --red: #ef4444;
-        --radius: 16px;
-        --radius-sm: 10px;
-        --shadow: 0 4px 20px rgba(112,81,148,0.08);
+        --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
+        --orange:#f59e0b; --blue:#3b82f6;
+        --grad:linear-gradient(135deg,#705194,#9b6fc4);
+        --surface:#ffffff;
+        --bg:#f8f7ff;
+        --border:#e8e4f0;
+        --text:#1e293b;
+        --muted:#64748b;
+        --radius:16px;
+        --radius-sm:10px;
+        --shadow:0 2px 10px rgba(112,81,148,.05);
     }
 
     body { background: var(--bg); }
     .pg { max-width: 900px; margin: 0 auto; padding: 16px; }
 
     /* PAGE HEADER */
-    .pg-header { margin-bottom: 25px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-    .pg-header h1 { font-size: clamp(1.3rem, 5vw, 1.8rem); font-weight: 900; color: var(--text); margin: 0; letter-spacing: -0.5px; }
-    .pg-header p { color: var(--muted); margin: 4px 0 0; font-size: 0.85rem; }
+    .pg-header { margin-bottom: 25px; padding-bottom: 10px; border-bottom: 1.5px solid var(--border); }
+    .pg-header h1 { font-size:1.7rem; font-weight:800; color:var(--text); margin:0; letter-spacing:-0.5px; }
+    .pg-header p { color:var(--muted); margin:4px 0 0; font-size:0.88rem; }
 
     /* CARD */
     .card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border); margin-bottom: 20px; overflow: hidden; }
@@ -1827,20 +1930,24 @@ TEMPLATES["reports.html"] = """
 
 <style>
     :root {
+        --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
+        --orange:#f59e0b; --blue:#3b82f6;
+        --grad:linear-gradient(135deg,#705194,#9b6fc4);
+        --bg:#f8f7ff;
+        --border:#e8e4f0; --text:#1e293b; --muted:#64748b;
+        --radius:16px; --radius-sm:10px;
+        --shadow:0 2px 10px rgba(112,81,148,.05);
+        /* legacy aliases */
         --brand-navy: #162135;
         --brand-purple: #705194;
         --brand-green: #10b981;
         --brand-red: #ef4444;
-        --soft-bg: #f8fafc;
-        --border-light: #e2e8f0;
+        --soft-bg: #f8f7ff;
+        --border-light: #e8e4f0;
     }
 
     /* --- PAGE UI WRAPPER --- */
-    .report-ui-wrapper { 
-        max-width: 900px; 
-        margin: 0 auto; 
-        padding: 10px; 
-    }
+    .report-ui-wrapper { max-width: 900px; margin: 0 auto; padding: 10px; }
 
     /* --- RESPONSIVE CONTROLS --- */
     .report-controls {
@@ -1849,9 +1956,10 @@ TEMPLATES["reports.html"] = """
         align-items: center;
         background: white;
         padding: 12px;
-        border-radius: 12px;
+        border-radius: var(--radius);
         margin-bottom: 20px;
-        border: 1px solid var(--border-light);
+        border: 1.5px solid var(--border);
+        box-shadow: var(--shadow);
         flex-wrap: wrap; 
         gap: 12px;
     }
@@ -1875,7 +1983,7 @@ TEMPLATES["reports.html"] = """
         color: #64748b; 
         transition: 0.2s; 
     }
-    .period-btn.active { background: white; color: var(--brand-purple); box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .period-btn.active { background: white; color: var(--brand); box-shadow: 0 2px 10px rgba(112,81,148,.1); font-weight:700; }
 
     .btn-group { 
         display: flex; 
@@ -2111,20 +2219,17 @@ TEMPLATES["sales.html"] = """
     *, *::before, *::after { box-sizing: border-box; }
 
     :root {
-        --brand: #705194;
-        --brand-dark: #553c7b;
-        --brand-light: #f3e8ff;
-        --grad: linear-gradient(135deg, #705194 0%, #553c7b 100%);
-        --surface: #ffffff;
-        --bg: #f5f4f8;
-        --border: #e8e3f0;
-        --text: #1a1a2e;
-        --muted: #7a7a9a;
-        --green: #10b981;
-        --red: #ef4444;
-        --radius: 16px;
-        --radius-sm: 10px;
-        --shadow: 0 4px 20px rgba(112,81,148,0.08);
+        --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
+        --orange:#f59e0b; --blue:#3b82f6;
+        --grad:linear-gradient(135deg,#705194,#9b6fc4);
+        --surface:#ffffff;
+        --bg:#f8f7ff;
+        --border:#e8e4f0;
+        --text:#1e293b;
+        --muted:#64748b;
+        --radius:16px;
+        --radius-sm:10px;
+        --shadow:0 2px 10px rgba(112,81,148,.05);
     }
 
     body { background: var(--bg); }
@@ -2132,8 +2237,8 @@ TEMPLATES["sales.html"] = """
 
     /* PAGE HEADER */
     .pg-header { margin-bottom: 20px; }
-    .pg-header h1 { font-size: clamp(1.3rem, 5vw, 1.8rem); font-weight: 900; color: var(--text); margin: 0; letter-spacing: -0.5px; }
-    .pg-header p { color: var(--muted); margin: 2px 0 0; font-size: 0.82rem; }
+    .pg-header h1 { font-size:1.7rem; font-weight:800; color:var(--text); margin:0; letter-spacing:-0.5px; }
+    .pg-header p { color:var(--muted); margin:4px 0 0; font-size:0.88rem; }
 
     /* CARD */
     .card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border); margin-bottom: 20px; overflow: hidden; }
@@ -2703,7 +2808,7 @@ const hourlyValues  = {{ hourly_values|tojson }};
 const catLabels     = {{ cat_perf|map(attribute='name')|list|tojson }};
 const catRevenue    = {{ cat_perf|map(attribute='revenue')|list|tojson }};
 
-Chart.defaults.font.family = "'Inter','Outfit',sans-serif";
+Chart.defaults.font.family = "'Outfit','Inter',sans-serif";
 Chart.defaults.color = '#64748b';
 
 const COLORS = ['#705194','#9b6fc4','#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#14b8a6'];
