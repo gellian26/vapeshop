@@ -51,7 +51,7 @@ class Product(db.Model):
     qty = db.Column(db.Integer, default=0)
     cost = db.Column(db.Float, default=0.0)
     price = db.Column(db.Float, default=0.0)
-    discount = db.Column(db.Float, default=0.0)  # Discount percentage (0-100)
+    discount = db.Column(db.Float, default=0.0)  # Discount fixed peso amount
     image = db.Column(db.String(255), default='default.jpg')
     date_added = db.Column(db.DateTime, default=datetime.now)
 
@@ -233,8 +233,8 @@ def sales():
         p = db.session.get(Product, p_id)
         if p and qty > 0 and p.qty >= qty:
             product_discount = p.discount or 0
-            total_discount = min(product_discount + manual_discount, 100)
-            discounted_price = p.price * (1 - total_discount / 100)
+            total_discount = product_discount + manual_discount
+            discounted_price = max(0, p.price - total_discount)
             p.qty -= qty
             db.session.add(StockOutLog(name=p.name, flavor=p.flavor, category=p.type, qty=qty, price=discounted_price, cost=p.cost))
             db.session.commit()
@@ -1665,7 +1665,7 @@ TEMPLATES["products.html"] = """
                     <div class="field" id="qty_group"><label>Initial Qty</label><input type="number" name="quantity" id="quantity" value="0"></div>
                     
                     <div class="field"><label>Selling Price ₱</label><input type="number" step="0.01" name="price" id="price" required></div>
-                    <div class="field"><label>Discount %</label><input type="number" step="0.01" name="discount" id="discount" min="0" max="100" placeholder="0" value="0"></div>
+                    <div class="field"><label>Discount ₱</label><input type="number" step="0.01" name="discount" id="discount" min="0" placeholder="0" value="0"></div>
                 </div>
 
                 <div class="form-footer">
@@ -1708,13 +1708,13 @@ TEMPLATES["products.html"] = """
                         <td>₱{{ "{:,.2f}".format(p.price) }}</td>
                         <td>
                             {% if p.discount and p.discount > 0 %}
-                            <span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:12px;font-size:0.78rem;font-weight:700;">{{ p.discount|int }}% OFF</span>
+                            <span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:12px;font-size:0.78rem;font-weight:700;">₱{{ "%.2f"|format(p.discount) }} OFF</span>
                             {% else %}
                             <span style="color:var(--muted);font-size:0.8rem;">—</span>
                             {% endif %}
                         </td>
                         <td style="font-weight:800;color:var(--brand);">
-                            ₱{{ "{:,.2f}".format(p.price * (1 - (p.discount or 0) / 100)) }}
+                            ₱{{ "{:,.2f}".format([p.price - (p.discount or 0), 0]|max) }}
                         </td>
                         <td>
                             <div style="display:flex;gap:5px;">
@@ -2558,8 +2558,8 @@ TEMPLATES["sales.html"] = """
                         <input type="number" name="quantity" id="qtyInput" value="" min="1" oninput="calcTotal()">
                     </div>
                     <div class="field">
-                        <label>Discount % <span style="font-size:0.72rem;color:var(--muted);font-weight:400;">(additional)</span></label>
-                        <input type="number" name="manual_discount" id="manualDiscount" value="0" min="0" max="100" step="0.01" oninput="calcTotal()" style="border: 1.5px solid #f59e0b; background: #fffbeb;">
+                        <label>Extra Discount ₱ <span style="font-size:0.72rem;color:var(--muted);font-weight:400;">(additional)</span></label>
+                        <input type="number" name="manual_discount" id="manualDiscount" value="0" min="0" step="0.01" oninput="calcTotal()" style="border: 1.5px solid #f59e0b; background: #fffbeb;">
                     </div>
                     <div class="field">
                         <label>Total Price</label>
@@ -2655,13 +2655,13 @@ function showToast(msg, color = '#10b981') {
 
 function selectItem(id, label, price, stock, discount) {
     const productDiscount = discount || 0;
-    const finalPrice = price * (1 - productDiscount / 100);
+    const finalPrice = Math.max(0, price - productDiscount);
     document.getElementById('hiddenKey').value = id;
     document.getElementById('productSearch').value = label;
     document.getElementById('searchResults').style.display = 'none';
     document.getElementById('chillaxPicker').style.display = 'none';
 
-    const discountNote = productDiscount > 0 ? ` — ${productDiscount}% OFF → ₱${finalPrice.toLocaleString(undefined,{minimumFractionDigits:2})}` : '';
+    const discountNote = productDiscount > 0 ? ` — ₱${productDiscount.toLocaleString(undefined,{minimumFractionDigits:2})} OFF → ₱${finalPrice.toLocaleString(undefined,{minimumFractionDigits:2})}` : '';
     document.getElementById('badgeText').textContent = `${label} (In Stock: ${stock})${discountNote}`;
     document.getElementById('selectedBadge').classList.add('show');
 
@@ -2712,7 +2712,7 @@ function filterProducts() {
     div.innerHTML = matches.map(([id, p]) => `
         <div class="s-item" onclick="selectItem('${id}','${p.name} - ${p.flavor}',${p.price},${p.qty},${p.discount||0})">
             <strong>${p.name} <span style="color:var(--brand)">${p.flavor||''}</span></strong>
-            <small>Stock: ${p.qty} | ₱${p.price.toLocaleString()}${p.discount > 0 ? ` <span style="color:#f59e0b;font-weight:700;">(-${p.discount}%)</span>` : ''}</small>
+            <small>Stock: ${p.qty} | ₱${p.price.toLocaleString()}${p.discount > 0 ? ` <span style="color:#f59e0b;font-weight:700;">(₱${p.discount.toLocaleString()} OFF)</span>` : ''}</small>
         </div>
     `).join('');
     div.style.display = matches.length ? 'block' : 'none';
@@ -2776,12 +2776,12 @@ function calcTotal() {
     const basePrice = parseFloat(document.getElementById('qtyInput').dataset.basePrice) || 0;
     const productDiscount = parseFloat(document.getElementById('qtyInput').dataset.productDiscount) || 0;
     const manualDiscount = parseFloat(document.getElementById('manualDiscount').value) || 0;
-    const totalDiscount = Math.min(productDiscount + manualDiscount, 100);
-    const finalPrice = basePrice * (1 - totalDiscount / 100);
+    const totalDiscount = productDiscount + manualDiscount;
+    const finalPrice = Math.max(0, basePrice - totalDiscount);
 
     let label = `₱ ${(qty * finalPrice).toLocaleString(undefined,{minimumFractionDigits:2})}`;
     if (totalDiscount > 0) {
-        label += ` <span style="font-size:0.75rem;color:#f59e0b;font-weight:700;">(${totalDiscount.toFixed(1)}% OFF)</span>`;
+        label += ` <span style="font-size:0.75rem;color:#f59e0b;font-weight:700;">(₱${totalDiscount.toLocaleString(undefined,{minimumFractionDigits:2})} OFF)</span>`;
     }
     document.getElementById('totalBox').innerHTML = label;
 }
