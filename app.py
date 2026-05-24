@@ -1,10 +1,12 @@
 import os
 import uuid
 import time
+import json
+import io
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from jinja2 import DictLoader
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session, send_file
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func, extract, desc
 from flask_migrate import Migrate
@@ -260,9 +262,8 @@ def sales():
         manual_discount = float(request.form.get('manual_discount') or 0)
         p = db.session.get(Product, p_id)
         if p and qty > 0 and p.qty >= qty:
-            product_discount = p.discount or 0
-            total_discount = min(product_discount + manual_discount, 100)
-            discounted_price = p.price * (1 - total_discount / 100)
+            # manual_discount is now a fixed ₱ amount per item
+            discounted_price = max(0, p.price - manual_discount)
             p.qty -= qty
             db.session.add(StockOutLog(name=p.name, flavor=p.flavor, category=p.type, qty=qty, price=discounted_price, cost=p.cost))
             db.session.commit()
@@ -313,6 +314,100 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for('login'))
+
+@app.route('/settings')
+def settings():
+    return render_template('settings.html',
+        product_count=Product.query.count(),
+        sales_count=StockOutLog.query.count(),
+        stock_in_count=StockInLog.query.count()
+    )
+
+@app.route('/settings/backup')
+def backup():
+    products = Product.query.all()
+    stock_in = StockInLog.query.all()
+    stock_out = StockOutLog.query.all()
+
+    data = {
+        "backup_date": datetime.now().isoformat(),
+        "products": [
+            {"id": p.id, "barcode": p.barcode, "name": p.name, "flavor": p.flavor,
+             "type": p.type, "version": p.version, "mg": p.mg, "qty": p.qty,
+             "cost": p.cost, "price": p.price, "discount": p.discount or 0.0,
+             "image": p.image, "date_added": p.date_added.isoformat() if p.date_added else None}
+            for p in products
+        ],
+        "stock_in_logs": [
+            {"id": l.id, "date": l.date.isoformat() if l.date else None,
+             "name": l.name, "flavor": l.flavor, "category": l.category, "qty": l.qty}
+            for l in stock_in
+        ],
+        "stock_out_logs": [
+            {"id": l.id, "date": l.date.isoformat() if l.date else None,
+             "name": l.name, "flavor": l.flavor, "category": l.category,
+             "qty": l.qty, "price": l.price, "cost": l.cost}
+            for l in stock_out
+        ]
+    }
+
+    buf = io.BytesIO(json.dumps(data, indent=2).encode('utf-8'))
+    buf.seek(0)
+    filename = f"flex_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    return send_file(buf, mimetype='application/json', as_attachment=True, download_name=filename)
+
+@app.route('/settings/restore', methods=['POST'])
+def restore():
+    f = request.files.get('backup_file')
+    if not f or not f.filename.endswith('.json'):
+        flash("Please upload a valid .json backup file.", "danger")
+        return redirect(url_for('settings'))
+    try:
+        data = json.loads(f.read().decode('utf-8'))
+
+        # Restore Products
+        if 'products' in data:
+            Product.query.delete()
+            for item in data['products']:
+                p = Product(
+                    id=item.get('id'), barcode=item.get('barcode'), name=item.get('name'),
+                    flavor=item.get('flavor'), type=item.get('type'), version=item.get('version'),
+                    mg=item.get('mg'), qty=item.get('qty', 0), cost=item.get('cost', 0.0),
+                    price=item.get('price', 0.0), discount=item.get('discount', 0.0),
+                    image=item.get('image', 'default.jpg'),
+                    date_added=datetime.fromisoformat(item['date_added']) if item.get('date_added') else datetime.now()
+                )
+                db.session.add(p)
+
+        # Restore Stock In Logs
+        if 'stock_in_logs' in data:
+            StockInLog.query.delete()
+            for item in data['stock_in_logs']:
+                l = StockInLog(
+                    id=item.get('id'), name=item.get('name'), flavor=item.get('flavor'),
+                    category=item.get('category'), qty=item.get('qty', 0),
+                    date=datetime.fromisoformat(item['date']) if item.get('date') else datetime.now()
+                )
+                db.session.add(l)
+
+        # Restore Stock Out Logs
+        if 'stock_out_logs' in data:
+            StockOutLog.query.delete()
+            for item in data['stock_out_logs']:
+                l = StockOutLog(
+                    id=item.get('id'), name=item.get('name'), flavor=item.get('flavor'),
+                    category=item.get('category'), qty=item.get('qty', 0),
+                    price=item.get('price', 0.0), cost=item.get('cost', 0.0),
+                    date=datetime.fromisoformat(item['date']) if item.get('date') else datetime.now()
+                )
+                db.session.add(l)
+
+        db.session.commit()
+        flash("Backup restored successfully! All data has been replaced.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Restore failed: {str(e)}", "danger")
+    return redirect(url_for('settings'))
 
 
 # --- 6. DEFINE EMBEDDED JINJA TEMPLATE STRINGS ---
@@ -572,6 +667,7 @@ TEMPLATES["base.html"] = """
             <li><a href="/sales" class="{{ 'active' if request.path == '/sales' }}"><i class="fa-solid fa-cart-shopping"></i> <span>Sales</span></a></li>
             <li><a href="/products" class="{{ 'active' if request.path == '/products' }}"><i class="fa-solid fa-tags"></i> <span>Products</span></a></li>
             <li><a href="/reports" class="{{ 'active' if request.path == '/reports' }}"><i class="fa-solid fa-file-waveform"></i> <span>Reports</span></a></li>
+            <li><a href="/settings" class="{{ 'active' if request.path == '/settings' }}"><i class="fa-solid fa-gear"></i> <span>Settings</span></a></li>
         </ul>
 
         <div class="logout-container">
@@ -2333,8 +2429,8 @@ TEMPLATES["sales.html"] = """
                         <input type="number" name="quantity" id="qtyInput" value="" min="1" oninput="calcTotal()">
                     </div>
                     <div class="field">
-                        <label>Discount % <span style="font-size:0.72rem;color:var(--muted);font-weight:400;">(additional)</span></label>
-                        <input type="number" name="manual_discount" id="manualDiscount" value="0" min="0" max="100" step="0.01" oninput="calcTotal()" style="border: 1.5px solid #f59e0b; background: #fffbeb;">
+                        <label>Discount ₱ <span style="font-size:0.72rem;color:var(--muted);font-weight:400;">(per item)</span></label>
+                        <input type="number" name="manual_discount" id="manualDiscount" value="0" min="0" step="0.01" oninput="calcTotal()" style="border: 1.5px solid #f59e0b; background: #fffbeb;">
                     </div>
                     <div class="field">
                         <label>Total Price</label>
@@ -2394,19 +2490,15 @@ function showToast(msg, color = '#10b981') {
 }
 
 function selectItem(id, label, price, stock, discount) {
-    const productDiscount = discount || 0;
-    const finalPrice = price * (1 - productDiscount / 100);
     document.getElementById('hiddenKey').value = id;
     document.getElementById('productSearch').value = label;
     document.getElementById('searchResults').style.display = 'none';
 
-    const discountNote = productDiscount > 0 ? ` — ${productDiscount}% OFF → ₱${finalPrice.toLocaleString(undefined,{minimumFractionDigits:2})}` : '';
-    document.getElementById('badgeText').textContent = `${label} (In Stock: ${stock})${discountNote}`;
+    document.getElementById('badgeText').textContent = `${label} (In Stock: ${stock})`;
     document.getElementById('selectedBadge').classList.add('show');
 
-    // Store original price and product-level discount for calcTotal
+    // Store original price for calcTotal
     document.getElementById('qtyInput').dataset.basePrice = price;
-    document.getElementById('qtyInput').dataset.productDiscount = productDiscount;
     document.getElementById('qtyInput').max = stock;
     document.getElementById('qtyInput').value = 1;
     document.getElementById('manualDiscount').value = 0;
@@ -2437,14 +2529,13 @@ function filterProducts() {
 function calcTotal() {
     const qty = parseInt(document.getElementById('qtyInput').value) || 0;
     const basePrice = parseFloat(document.getElementById('qtyInput').dataset.basePrice) || 0;
-    const productDiscount = parseFloat(document.getElementById('qtyInput').dataset.productDiscount) || 0;
     const manualDiscount = parseFloat(document.getElementById('manualDiscount').value) || 0;
-    const totalDiscount = Math.min(productDiscount + manualDiscount, 100);
-    const finalPrice = basePrice * (1 - totalDiscount / 100);
+    const finalPrice = Math.max(0, basePrice - manualDiscount);
+    const total = qty * finalPrice;
 
-    let label = `₱ ${(qty * finalPrice).toLocaleString(undefined,{minimumFractionDigits:2})}`;
-    if (totalDiscount > 0) {
-        label += ` <span style="font-size:0.75rem;color:#f59e0b;font-weight:700;">(${totalDiscount.toFixed(1)}% OFF)</span>`;
+    let label = `₱ ${total.toLocaleString(undefined,{minimumFractionDigits:2})}`;
+    if (manualDiscount > 0 && basePrice > 0) {
+        label += ` <span style="font-size:0.75rem;color:#f59e0b;font-weight:700;">(-₱${manualDiscount.toLocaleString(undefined,{minimumFractionDigits:2})}/item)</span>`;
     }
     document.getElementById('totalBox').innerHTML = label;
 }
@@ -2454,7 +2545,6 @@ function clearSale() {
     document.getElementById('productSearch').value = '';
     document.getElementById('qtyInput').value = 1;
     document.getElementById('qtyInput').dataset.basePrice = 0;
-    document.getElementById('qtyInput').dataset.productDiscount = 0;
     document.getElementById('manualDiscount').value = 0;
     document.getElementById('totalBox').innerHTML = '₱ 0.00';
     document.getElementById('selectedBadge').classList.remove('show');
@@ -2464,6 +2554,138 @@ function clearSale() {
 window.addEventListener('click', e => {
     if (!e.target.matches('#productSearch')) document.getElementById('searchResults').style.display = 'none';
 });
+</script>
+{% endblock %}
+"""
+
+TEMPLATES["settings.html"] = """
+{% extends 'base.html' %}
+{% block content %}
+<style>
+    :root { --brand: #705194; --brand-light: #f3eeff; --green: #10b981; --grad: linear-gradient(135deg,#705194,#9b6fc4); --radius: 16px; --radius-sm: 10px; --border: #e8e4f0; --text: #1e293b; --muted: #64748b; --bg: #f8f7ff; }
+    .pg { max-width: 700px; margin: 0 auto; padding: 0 0 40px; }
+    .pg-header { margin-bottom: 28px; }
+    .pg-header h1 { font-size: 1.7rem; font-weight: 800; color: var(--text); }
+    .pg-header p { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
+    .settings-card { background: white; border-radius: var(--radius); border: 1.5px solid var(--border); margin-bottom: 20px; overflow: hidden; box-shadow: 0 2px 12px rgba(112,81,148,0.06); }
+    .settings-card-head { display: flex; align-items: center; gap: 14px; padding: 20px 24px; border-bottom: 1.5px solid var(--border); background: var(--bg); }
+    .settings-card-head .ico { width: 40px; height: 40px; background: var(--grad); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.1rem; flex-shrink: 0; }
+    .settings-card-head strong { font-size: 1rem; font-weight: 700; color: var(--text); display: block; }
+    .settings-card-head span { font-size: 0.8rem; color: var(--muted); }
+    .settings-card-body { padding: 24px; }
+    .settings-section { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .settings-desc h4 { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+    .settings-desc p { font-size: 0.82rem; color: var(--muted); line-height: 1.5; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 20px; height: 44px; border-radius: var(--radius-sm); font-weight: 700; font-size: 0.88rem; cursor: pointer; border: none; transition: 0.2s; text-decoration: none; white-space: nowrap; }
+    .btn-primary { background: var(--grad); color: white; }
+    .btn-primary:hover { opacity: 0.88; }
+    .btn-danger { background: #fff1f2; color: #e11d48; border: 1.5px solid #fecdd3; }
+    .btn-danger:hover { background: #ffe4e6; }
+    .btn-warning { background: #fffbeb; color: #b45309; border: 1.5px solid #fde68a; }
+    .btn-warning:hover { background: #fef3c7; }
+    .restore-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; padding-top: 16px; border-top: 1.5px solid var(--border); }
+    .file-input-wrap { position: relative; }
+    .file-input-wrap input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+    .file-label { display: inline-flex; align-items: center; gap: 8px; padding: 0 16px; height: 44px; background: var(--bg); border: 1.5px dashed #c4b5d4; border-radius: var(--radius-sm); font-size: 0.85rem; color: var(--muted); font-weight: 600; cursor: pointer; transition: 0.2s; min-width: 200px; }
+    .file-label:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-light); }
+    .divider-row { height: 1px; background: var(--border); margin: 20px 0; }
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .info-item { background: var(--bg); border-radius: var(--radius-sm); padding: 14px 16px; }
+    .info-item label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); font-weight: 700; display: block; margin-bottom: 4px; }
+    .info-item span { font-size: 0.9rem; font-weight: 700; color: var(--text); }
+    @media(max-width:500px){ .info-grid { grid-template-columns: 1fr; } .settings-section { flex-direction: column; align-items: flex-start; } }
+</style>
+
+<div class="pg">
+    <div class="pg-header">
+        <h1><i class="fas fa-gear" style="color:var(--brand);margin-right:10px;"></i>Settings</h1>
+        <p>Manage system preferences, data backup, and restore.</p>
+    </div>
+
+    <!-- BACKUP & RESTORE CARD -->
+    <div class="settings-card">
+        <div class="settings-card-head">
+            <div class="ico"><i class="fas fa-database"></i></div>
+            <div>
+                <strong>Backup &amp; Restore</strong>
+                <span>Export your data or restore from a previous backup</span>
+            </div>
+        </div>
+        <div class="settings-card-body">
+
+            <!-- BACKUP -->
+            <div class="settings-section">
+                <div class="settings-desc">
+                    <h4><i class="fas fa-download" style="color:var(--brand);margin-right:6px;"></i>Download Backup</h4>
+                    <p>Export all products, stock-in logs, and sales logs as a <strong>.json</strong> file.<br>Store it safely — you can use it to restore data anytime.</p>
+                </div>
+                <a href="/settings/backup" class="btn btn-primary">
+                    <i class="fas fa-download"></i> Download Backup
+                </a>
+            </div>
+
+            <div class="divider-row"></div>
+
+            <!-- RESTORE -->
+            <div class="settings-section">
+                <div class="settings-desc">
+                    <h4><i class="fas fa-upload" style="color:#b45309;margin-right:6px;"></i>Restore from Backup</h4>
+                    <p>Upload a previously downloaded <strong>.json</strong> backup file.<br><span style="color:#e11d48;font-weight:600;">⚠ Warning:</span> This will permanently replace all current data.</p>
+                </div>
+            </div>
+            <form class="restore-form" method="POST" action="/settings/restore" enctype="multipart/form-data">
+                <div class="file-input-wrap">
+                    <div class="file-label" id="fileLabel">
+                        <i class="fas fa-folder-open"></i>
+                        <span id="fileLabelText">Choose backup file...</span>
+                    </div>
+                    <input type="file" name="backup_file" accept=".json" required onchange="updateFileLabel(this)">
+                </div>
+                <button type="submit" class="btn btn-warning" onclick="return confirm('This will replace ALL current data with the backup. Are you sure?')">
+                    <i class="fas fa-rotate-left"></i> Restore Now
+                </button>
+            </form>
+
+        </div>
+    </div>
+
+    <!-- SYSTEM INFO CARD -->
+    <div class="settings-card">
+        <div class="settings-card-head">
+            <div class="ico"><i class="fas fa-circle-info"></i></div>
+            <div>
+                <strong>System Information</strong>
+                <span>Current app and database stats</span>
+            </div>
+        </div>
+        <div class="settings-card-body">
+            <div class="info-grid">
+                <div class="info-item">
+                    <label>Total Products</label>
+                    <span>{{ product_count }}</span>
+                </div>
+                <div class="info-item">
+                    <label>Total Sales Logged</label>
+                    <span>{{ sales_count }}</span>
+                </div>
+                <div class="info-item">
+                    <label>Stock-In Records</label>
+                    <span>{{ stock_in_count }}</span>
+                </div>
+                <div class="info-item">
+                    <label>App Version</label>
+                    <span>F.L.E.X v1.0</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function updateFileLabel(input) {
+    const label = document.getElementById('fileLabelText');
+    label.textContent = input.files.length ? input.files[0].name : 'Choose backup file...';
+}
 </script>
 {% endblock %}
 """
