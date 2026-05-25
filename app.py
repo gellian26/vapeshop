@@ -1550,11 +1550,15 @@ TEMPLATES["inventory.html"] = """
     .header-title h1 { font-size: 1.7rem; font-weight: 800; color: var(--text); margin: 0; letter-spacing: -0.5px; }
     .header-title p { color: var(--muted); margin: 4px 0 0; font-size: 0.88rem; }
 
-    .notif-bell {
-        background: white; width: 45px; height: 45px; border-radius: 50%;
-        display: flex; align-items: center; justify-content: center;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05); color: #1a2b4b; position: relative;
+    .sort-btn {
+        display: flex; align-items: center; gap: 8px;
+        background: white; border: 1.5px solid var(--border);
+        padding: 10px 18px; border-radius: 50px; font-size: 0.82rem;
+        font-weight: 700; color: #705194; cursor: pointer;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05); transition: 0.2s;
     }
+    .sort-btn:hover { background: var(--brand-light); border-color: #705194; }
+    .sort-btn.active { background: #705194; color: white; border-color: #705194; }
 
     /* --- LIST CARD --- */
     .list-card {
@@ -1620,9 +1624,9 @@ TEMPLATES["inventory.html"] = """
         <div class="header-title">
             <h1>Inventory</h1>
         </div>
-        <div class="notif-bell">
-            <i class="fas fa-bell"></i>
-        </div>
+        <button class="sort-btn" id="sortCatBtn" onclick="toggleSortByCategory()">
+            <i class="fas fa-layer-group"></i> Sort by Category
+        </button>
     </div>
 
     <!-- MASTER LIST CARD -->
@@ -1709,6 +1713,8 @@ TEMPLATES["inventory.html"] = """
 </div>
 
 <script>
+    let sortedByCategory = false;
+
     function filterInventory() {
         let input = document.getElementById("invSearch");
         let filter = input.value.toUpperCase();
@@ -1736,6 +1742,36 @@ TEMPLATES["inventory.html"] = """
             }
         }
     }
+
+    function toggleSortByCategory() {
+        sortedByCategory = !sortedByCategory;
+        const btn = document.getElementById("sortCatBtn");
+        btn.classList.toggle("active", sortedByCategory);
+
+        const tbody = document.querySelector("#invTable tbody");
+        const rows = Array.from(tbody.querySelectorAll("tr"));
+
+        if (sortedByCategory) {
+            rows.sort((a, b) => {
+                const catA = (a.querySelector("td:nth-child(5)")?.textContent.trim() || "").toLowerCase();
+                const catB = (b.querySelector("td:nth-child(5)")?.textContent.trim() || "").toLowerCase();
+                return catA.localeCompare(catB);
+            });
+        } else {
+            rows.sort((a, b) => {
+                return parseInt(a.dataset.origIndex || 0) - parseInt(b.dataset.origIndex || 0);
+            });
+        }
+
+        rows.forEach(row => tbody.appendChild(row));
+    }
+
+    // Store original order on load
+    document.addEventListener("DOMContentLoaded", function () {
+        const tbody = document.querySelector("#invTable tbody");
+        const rows = Array.from(tbody.querySelectorAll("tr"));
+        rows.forEach((row, i) => row.dataset.origIndex = i);
+    });
 </script>
 {% endblock %}
 """
