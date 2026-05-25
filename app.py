@@ -3928,7 +3928,7 @@ TEMPLATES["settings.html"] = """
                     <div class="field">
                         <label>New Username</label>
                         <input type="text" name="new_username"
-                               placeholder="Enter new username" required autocomplete="username">
+                               placeholder="Enter new username" required autocomplete="off">
                     </div>
                     <div class="field">
                         <label>Confirm with Password</label>
