@@ -3121,10 +3121,12 @@ function calcTotal() {
     const manualDiscount = parseFloat(document.getElementById('manualDiscount').value) || 0;
     const totalDiscount = productDiscount + manualDiscount;
     const finalPrice = Math.max(0, basePrice - totalDiscount);
+    const grandTotal = qty * finalPrice;
 
-    let label = `₱ ${(qty * finalPrice).toLocaleString(undefined,{minimumFractionDigits:2})}`;
+    const fmt = v => v.toLocaleString(undefined, {minimumFractionDigits:2});
+    let label = `₱ ${fmt(grandTotal)}`;
     if (totalDiscount > 0) {
-        label += ` <span style="font-size:0.75rem;color:#f59e0b;font-weight:700;">(₱${totalDiscount.toLocaleString(undefined,{minimumFractionDigits:2})} OFF)</span>`;
+        label += ` <span style="font-size:0.75rem;color:#f59e0b;font-weight:700;">(₱${fmt(basePrice)} − ₱${fmt(totalDiscount)}/unit = ₱${fmt(finalPrice)}/unit × ${qty})</span>`;
     }
     document.getElementById('totalBox').innerHTML = label;
 }
@@ -3531,9 +3533,7 @@ function switchTrend(type, btn) {
     trendChart.data.datasets[0].label = isRev ? 'Revenue (₱)' : 'Units Sold';
     trendChart.options.plugins.tooltip.callbacks.label = ctx =>
         isRev ? ' ₱' + ctx.raw.toLocaleString() : ' ' + ctx.raw + ' units';
-    trendChart.options.scales.y.ticks.callback = v => isRev ? '₱' + v.toLocaleString() : (Number.isInteger(v) ? v : '');
-    trendChart.options.scales.y.ticks.stepSize = isRev ? undefined : 1;
-    trendChart.options.scales.y.ticks.precision = isRev ? undefined : 0;
+    trendChart.options.scales.y.ticks.callback = v => isRev ? '₱' + v.toLocaleString() : v;
     trendChart.update();
 }
 
