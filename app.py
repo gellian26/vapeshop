@@ -3531,7 +3531,9 @@ function switchTrend(type, btn) {
     trendChart.data.datasets[0].label = isRev ? 'Revenue (₱)' : 'Units Sold';
     trendChart.options.plugins.tooltip.callbacks.label = ctx =>
         isRev ? ' ₱' + ctx.raw.toLocaleString() : ' ' + ctx.raw + ' units';
-    trendChart.options.scales.y.ticks.callback = v => isRev ? '₱' + v.toLocaleString() : v;
+    trendChart.options.scales.y.ticks.callback = v => isRev ? '₱' + v.toLocaleString() : (Number.isInteger(v) ? v : '');
+    trendChart.options.scales.y.ticks.stepSize = isRev ? undefined : 1;
+    trendChart.options.scales.y.ticks.precision = isRev ? undefined : 0;
     trendChart.update();
 }
 
