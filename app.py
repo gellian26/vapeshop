@@ -3791,6 +3791,42 @@ TEMPLATES["settings.html"] = """
         .stat-row { gap: 7px; }
         .stat-box { padding: 10px 4px; }
     }
+
+    /* ── SETTINGS TAB NAV ── */
+    .settings-nav {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        background: #1a1f35;
+        border-radius: var(--radius);
+        padding: 10px;
+        margin-bottom: 22px;
+    }
+    .settings-nav .nav-group-label {
+        font-size: 0.58rem; font-weight: 800; text-transform: uppercase;
+        letter-spacing: 1.2px; color: #6b7a99;
+        padding: 4px 8px 6px;
+    }
+    .settings-nav .nav-item {
+        display: flex; align-items: center; gap: 10px;
+        padding: 11px 14px; border-radius: 10px;
+        font-size: 0.88rem; font-weight: 600;
+        color: #a0aec0; cursor: pointer;
+        transition: background .15s, color .15s;
+        border: none; background: transparent; width: 100%; text-align: left;
+    }
+    .settings-nav .nav-item i {
+        font-size: 0.82rem; width: 16px; text-align: center;
+    }
+    .settings-nav .nav-item:hover { background: rgba(255,255,255,.06); color: #cbd5e0; }
+    .settings-nav .nav-item.active {
+        background: #2a3150; color: #ffffff;
+    }
+    .settings-nav .nav-item.active i { color: #7b9ef8; }
+
+    /* ── TAB PANELS ── */
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
 </style>
 
 <div class="pg">
@@ -3805,6 +3841,20 @@ TEMPLATES["settings.html"] = """
         {{ msg }}
     </div>
     {% endif %}
+
+    <!-- SETTINGS TAB NAV -->
+    <nav class="settings-nav">
+        <div class="nav-group-label">System</div>
+        <button class="nav-item active" onclick="switchTab('users', this)" id="tab-btn-users">
+            <i class="fas fa-users"></i> Users
+        </button>
+        <button class="nav-item" onclick="switchTab('backup', this)" id="tab-btn-backup">
+            <i class="fas fa-shield-halved"></i> Backup &amp; Restore
+        </button>
+    </nav>
+
+    <!-- TAB: USERS -->
+    <div class="tab-panel active" id="tab-users">
 
     <!-- SYSTEM OVERVIEW -->
     <div class="section-label">System Overview</div>
@@ -3888,8 +3938,13 @@ TEMPLATES["settings.html"] = """
         </div>
     </div>
 
+    </div><!-- /tab-users -->
+
+    <!-- TAB: BACKUP & RESTORE -->
+    <div class="tab-panel" id="tab-backup">
+
     <!-- BACKUP & RESTORE -->
-    <div class="section-label section-sep">Backup &amp; Restore</div>
+    <div class="section-label">Backup &amp; Restore</div>
     <div class="card backup-card">
         <div class="card-head">
             <div class="ico"><i class="fas fa-database"></i></div>
@@ -3958,9 +4013,20 @@ TEMPLATES["settings.html"] = """
         </div>
     </div>
 
+    </div><!-- /tab-backup -->
+
 </div>
 
 <script>
+function switchTab(tab, btn) {
+    // Hide all panels, deactivate all nav items
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.settings-nav .nav-item').forEach(b => b.classList.remove('active'));
+    // Show selected panel and mark nav item active
+    document.getElementById('tab-' + tab).classList.add('active');
+    btn.classList.add('active');
+}
+
 function updateDropLabel(input) {
     const file = input.files[0];
     if (!file) return;
