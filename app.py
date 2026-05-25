@@ -1550,15 +1550,19 @@ TEMPLATES["inventory.html"] = """
     .header-title h1 { font-size: 1.7rem; font-weight: 800; color: var(--text); margin: 0; letter-spacing: -0.5px; }
     .header-title p { color: var(--muted); margin: 4px 0 0; font-size: 0.88rem; }
 
-    .sort-btn {
-        display: flex; align-items: center; gap: 8px;
-        background: white; border: 1.5px solid var(--border);
-        padding: 10px 18px; border-radius: 50px; font-size: 0.82rem;
-        font-weight: 700; color: #705194; cursor: pointer;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05); transition: 0.2s;
+    .cat-filters {
+        display: flex; gap: 8px; flex-wrap: wrap;
     }
-    .sort-btn:hover { background: var(--brand-light); border-color: #705194; }
-    .sort-btn.active { background: #705194; color: white; border-color: #705194; }
+    .cat-pill {
+        display: flex; align-items: center; gap: 6px;
+        background: white; border: 1.5px solid var(--border);
+        padding: 9px 18px; border-radius: 50px; font-size: 0.8rem;
+        font-weight: 700; color: var(--muted); cursor: pointer;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04); transition: 0.2s;
+        white-space: nowrap;
+    }
+    .cat-pill:hover { border-color: #705194; color: #705194; background: var(--brand-light); }
+    .cat-pill.active { background: #705194; color: white; border-color: #705194; }
 
     /* --- LIST CARD --- */
     .list-card {
@@ -1624,9 +1628,11 @@ TEMPLATES["inventory.html"] = """
         <div class="header-title">
             <h1>Inventory</h1>
         </div>
-        <button class="sort-btn" id="sortCatBtn" onclick="toggleSortByCategory()">
-            <i class="fas fa-layer-group"></i> Sort by Category
-        </button>
+        <div class="cat-filters">
+            <button class="cat-pill active" onclick="filterByCategory('all', this)"><i class="fas fa-border-all"></i> All</button>
+            <button class="cat-pill" onclick="filterByCategory('pods', this)"><i class="fas fa-circle-dot"></i> Pods</button>
+            <button class="cat-pill" onclick="filterByCategory('dispo', this)"><i class="fas fa-wind"></i> Dispo</button>
+        </div>
     </div>
 
     <!-- MASTER LIST CARD -->
@@ -1713,57 +1719,40 @@ TEMPLATES["inventory.html"] = """
 </div>
 
 <script>
-    let sortedByCategory = false;
+    let activeCategory = 'all';
 
-    function filterInventory() {
-        let input = document.getElementById("invSearch");
-        let filter = input.value.toUpperCase();
-        let table = document.getElementById("invTable");
-        let tr = table.getElementsByTagName("tr");
-
-        for (let i = 1; i < tr.length; i++) {
-            // Col 1 = Code Name, Col 2 = Product Name, Col 3 = Flavor
-            let tdCode   = tr[i].getElementsByTagName("td")[1];
-            let tdName   = tr[i].getElementsByTagName("td")[2];
-            let tdFlavor = tr[i].getElementsByTagName("td")[3];
-
-            if (tdName) {
-                let codeVal   = tdCode   ? (tdCode.textContent   || tdCode.innerText)   : '';
-                let nameVal   = tdName   ? (tdName.textContent   || tdName.innerText)   : '';
-                let flavorVal = tdFlavor ? (tdFlavor.textContent || tdFlavor.innerText) : '';
-
-                if (codeVal.toUpperCase().indexOf(filter) > -1 ||
-                    nameVal.toUpperCase().indexOf(filter) > -1  ||
-                    flavorVal.toUpperCase().indexOf(filter) > -1) {
-                    tr[i].style.display = "";
-                } else {
-                    tr[i].style.display = "none";
-                }
-            }
-        }
+    function filterByCategory(cat, btn) {
+        activeCategory = cat;
+        document.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        applyFilters();
     }
 
-    function toggleSortByCategory() {
-        sortedByCategory = !sortedByCategory;
-        const btn = document.getElementById("sortCatBtn");
-        btn.classList.toggle("active", sortedByCategory);
+    function filterInventory() {
+        applyFilters();
+    }
 
+    function applyFilters() {
+        const searchVal = (document.getElementById("invSearch").value || '').toUpperCase();
         const tbody = document.querySelector("#invTable tbody");
         const rows = Array.from(tbody.querySelectorAll("tr"));
 
-        if (sortedByCategory) {
-            rows.sort((a, b) => {
-                const catA = (a.querySelector("td:nth-child(5)")?.textContent.trim() || "").toLowerCase();
-                const catB = (b.querySelector("td:nth-child(5)")?.textContent.trim() || "").toLowerCase();
-                return catA.localeCompare(catB);
-            });
-        } else {
-            rows.sort((a, b) => {
-                return parseInt(a.dataset.origIndex || 0) - parseInt(b.dataset.origIndex || 0);
-            });
-        }
+        rows.forEach(row => {
+            const tds = row.getElementsByTagName("td");
+            const codeVal   = tds[1] ? (tds[1].textContent || tds[1].innerText) : '';
+            const nameVal   = tds[2] ? (tds[2].textContent || tds[2].innerText) : '';
+            const flavorVal = tds[3] ? (tds[3].textContent || tds[3].innerText) : '';
+            const catVal    = tds[4] ? (tds[4].textContent || tds[4].innerText).trim().toLowerCase() : '';
 
-        rows.forEach(row => tbody.appendChild(row));
+            const matchesSearch = !searchVal ||
+                codeVal.toUpperCase().indexOf(searchVal) > -1 ||
+                nameVal.toUpperCase().indexOf(searchVal) > -1 ||
+                flavorVal.toUpperCase().indexOf(searchVal) > -1;
+
+            const matchesCat = activeCategory === 'all' || catVal.indexOf(activeCategory) > -1;
+
+            row.style.display = (matchesSearch && matchesCat) ? '' : 'none';
+        });
     }
 
     // Store original order on load
