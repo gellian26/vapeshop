@@ -3889,23 +3889,26 @@ TEMPLATES["settings.html"] = """
             <small>Signed in as <strong>{{ admin_user }}</strong></small>
         </div>
         <div class="card-body">
-            <form method="POST">
+            <form method="POST" autocomplete="off">
                 <input type="hidden" name="action" value="change_password">
+                <!-- Dummy fields to prevent browser autofill -->
+                <input type="text" style="display:none" name="fake_user">
+                <input type="password" style="display:none" name="fake_pass">
                 <div class="field">
                     <label>Current Password</label>
                     <input type="password" name="current_password"
-                           placeholder="Enter current password" required autocomplete="current-password">
+                           placeholder="Enter current password" required autocomplete="off">
                 </div>
                 <div class="two-col">
                     <div class="field">
                         <label>New Password</label>
                         <input type="password" name="new_password"
-                               placeholder="New password" required autocomplete="new-password">
+                               placeholder="New password" required autocomplete="off">
                     </div>
                     <div class="field">
                         <label>Confirm New Password</label>
                         <input type="password" name="confirm_password"
-                               placeholder="Repeat password" required autocomplete="new-password">
+                               placeholder="Repeat password" required autocomplete="off">
                     </div>
                 </div>
                 <button type="submit" class="btn btn-primary">
@@ -3922,8 +3925,11 @@ TEMPLATES["settings.html"] = """
             <strong>Change Username</strong>
         </div>
         <div class="card-body">
-            <form method="POST">
+            <form method="POST" autocomplete="off">
                 <input type="hidden" name="action" value="change_username">
+                <!-- Dummy fields to prevent browser autofill -->
+                <input type="text" style="display:none" name="fake_user2">
+                <input type="password" style="display:none" name="fake_pass2">
                 <div class="two-col">
                     <div class="field">
                         <label>New Username</label>
@@ -3933,7 +3939,7 @@ TEMPLATES["settings.html"] = """
                     <div class="field">
                         <label>Confirm with Password</label>
                         <input type="password" name="password_for_user"
-                               placeholder="Current password" required autocomplete="current-password">
+                               placeholder="Current password" required autocomplete="off">
                     </div>
                 </div>
                 <button type="submit" class="btn btn-primary">
@@ -4008,7 +4014,7 @@ TEMPLATES["settings.html"] = """
                 <div class="field">
                     <label>Password to confirm restore</label>
                     <input type="password" name="restore_password"
-                           placeholder="Enter your password" required autocomplete="current-password">
+                           placeholder="Enter your password" required autocomplete="off">
                 </div>
 
                 <button type="submit" class="btn btn-blue">
