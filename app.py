@@ -1630,8 +1630,15 @@ TEMPLATES["inventory.html"] = """
         </div>
         <div class="cat-filters">
             <button class="cat-pill active" onclick="filterByCategory('all', this)"><i class="fas fa-border-all"></i> All</button>
-            <button class="cat-pill" onclick="filterByCategory('pods', this)"><i class="fas fa-circle-dot"></i> Pods</button>
-            <button class="cat-pill" onclick="filterByCategory('dispo', this)"><i class="fas fa-wind"></i> Dispo</button>
+            {% set categories = [] %}
+            {% for key, p in products.items() %}
+                {% if p.type and p.type not in categories %}
+                    {% set _ = categories.append(p.type) %}
+                {% endif %}
+            {% endfor %}
+            {% for cat in categories|sort %}
+            <button class="cat-pill" onclick="filterByCategory('{{ cat|lower }}', this)">{{ cat }}</button>
+            {% endfor %}
         </div>
     </div>
 
