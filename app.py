@@ -3310,7 +3310,7 @@ TEMPLATES["analytics.html"] = """
                 <div class="chart-head-left">
                     <div class="chart-ico"><i class="fas fa-calendar-days"></i></div>
                     <div>
-                        <div class="chart-title">Monthly Revenue vs Profit</div>
+                        <div class="chart-title">Monthly Profit</div>
                         <div class="chart-sub">Last 6 months comparison</div>
                     </div>
                 </div>
@@ -3546,8 +3546,7 @@ new Chart(document.getElementById('monthlyChart').getContext('2d'), {
     data: {
         labels: monthlyLabels,
         datasets: [
-            { label: 'Revenue', data: monthlyRev, backgroundColor: 'rgba(112,81,148,0.8)', borderRadius: 6 },
-            { label: 'Profit',  data: monthlyProfit, backgroundColor: 'rgba(16,185,129,0.7)', borderRadius: 6 }
+            { label: 'Profit', data: monthlyProfit, backgroundColor: 'rgba(16,185,129,0.7)', borderRadius: 6 }
         ]
     },
     options: {
