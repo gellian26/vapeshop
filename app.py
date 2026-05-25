@@ -3647,6 +3647,11 @@ TEMPLATES["settings.html"] = """
         font-size: 0.65rem; font-weight: 800; text-transform: uppercase;
         letter-spacing: 1px; color: var(--muted); margin: 22px 0 9px;
     }
+    .section-label.section-sep {
+        margin-top: 36px;
+        padding-top: 24px;
+        border-top: 1.5px solid var(--border);
+    }
 
     /* ALERT */
     .alert {
@@ -3884,7 +3889,7 @@ TEMPLATES["settings.html"] = """
     </div>
 
     <!-- BACKUP & RESTORE -->
-    <div class="section-label">Backup &amp; Restore</div>
+    <div class="section-label section-sep">Backup &amp; Restore</div>
     <div class="card backup-card">
         <div class="card-head">
             <div class="ico"><i class="fas fa-database"></i></div>
