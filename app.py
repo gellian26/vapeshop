@@ -43,6 +43,7 @@ TEMPLATES = {}
 class Product(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     barcode = db.Column(db.String(50), unique=True, nullable=True)
+    code_name = db.Column(db.String(50), nullable=True)
     name = db.Column(db.String(100), nullable=False)
     flavor = db.Column(db.String(100))
     type = db.Column(db.String(50))
@@ -90,6 +91,7 @@ def get_products_dict():
     return {str(p.id): {
         "id": p.id,
         "barcode": p.barcode or '',
+        "code_name": p.code_name or '',
         "name": p.name,
         "flavor": p.flavor or '',
         "type": p.type or '',
@@ -177,6 +179,7 @@ def products():
             return redirect(url_for('products'))
 
         name = request.form.get('name')
+        code_name = request.form.get('code_name', '').strip() or None
         price = float(request.form.get('price') or 0)
         cost = float(request.form.get('cost') or 0)
         discount = float(request.form.get('discount') or 0)
@@ -196,6 +199,7 @@ def products():
             if not p:
                 return redirect(url_for('products'))
             p.name, p.price, p.barcode = name, price, barcode
+            p.code_name = code_name
             p.flavor = request.form.get('flavor')
             p.type = request.form.get('type')
             p.version = request.form.get('version')
@@ -206,7 +210,8 @@ def products():
                 p.image = image_filename
         else:
             qty = int(request.form.get('quantity') or 0)
-            new_p = Product(name=name, price=price, barcode=barcode, 
+            new_p = Product(name=name, price=price, barcode=barcode,
+                            code_name=code_name,
                             qty=qty, 
                             type=request.form.get('type'), 
                             flavor=request.form.get('flavor'), 
@@ -485,7 +490,7 @@ def settings_backup():
     from flask import Response
 
     products = [{
-        'barcode': p.barcode, 'name': p.name, 'flavor': p.flavor,
+        'barcode': p.barcode, 'code_name': p.code_name, 'name': p.name, 'flavor': p.flavor,
         'type': p.type, 'version': p.version, 'mg': p.mg,
         'qty': p.qty, 'cost': p.cost, 'price': p.price,
         'discount': p.discount, 'image': p.image,
@@ -555,7 +560,7 @@ def settings_restore():
             if mode == 'merge' and (p.get('barcode') in existing_barcodes or key in existing_names_flavors):
                 continue
             new_p = Product(
-                barcode=p.get('barcode'), name=p.get('name', ''), flavor=p.get('flavor'),
+                barcode=p.get('barcode'), code_name=p.get('code_name'), name=p.get('name', ''), flavor=p.get('flavor'),
                 type=p.get('type'), version=p.get('version'), mg=p.get('mg'),
                 qty=p.get('qty', 0), cost=p.get('cost', 0.0), price=p.get('price', 0.0),
                 discount=p.get('discount', 0.0), image=p.get('image', 'default.jpg')
@@ -1632,7 +1637,7 @@ TEMPLATES["inventory.html"] = """
             
             <div class="search-box">
                 <i class="fas fa-search"></i>
-                <input type="text" id="invSearch" placeholder="Search product name or flavor..." onkeyup="filterInventory()">
+                <input type="text" id="invSearch" placeholder="Search by code name, product name or flavor..." onkeyup="filterInventory()">
             </div>
         </div>
 
@@ -1641,6 +1646,7 @@ TEMPLATES["inventory.html"] = """
                 <thead>
                     <tr>
                         <th>Image</th>
+                        <th>Code</th>
                         <th>Product Name</th>
                         <th>Flavor</th>
                         <th>Category</th>
@@ -1658,6 +1664,13 @@ TEMPLATES["inventory.html"] = """
                             <div class="img-cell">
                                 <img src="{{ url_for('static', filename='uploads/' + p.image) if p.image else '' }}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" style="width:100%;height:100%;object-fit:cover;"><div style="display:none;width:100%;height:100%;align-items:center;justify-content:center;color:#cbd5e1;font-size:1.2rem;"><i class="fas fa-image"></i></div>
                             </div>
+                        </td>
+                        <td>
+                            {% if p.code_name %}
+                            <span style="background:#ede9f8;color:#705194;padding:2px 8px;border-radius:6px;font-size:0.72rem;font-weight:800;font-family:monospace;white-space:nowrap;">{{ p.code_name }}</span>
+                            {% else %}
+                            <span style="color:#cbd5e1;font-size:0.75rem;">—</span>
+                            {% endif %}
                         </td>
                         <td class="name-cell">
                             <strong>{{ p.name }}</strong>
@@ -1703,15 +1716,19 @@ TEMPLATES["inventory.html"] = """
         let tr = table.getElementsByTagName("tr");
 
         for (let i = 1; i < tr.length; i++) {
-            // Column 1 is Name, Column 2 is Flavor
-            let tdName = tr[i].getElementsByTagName("td")[1];
-            let tdFlavor = tr[i].getElementsByTagName("td")[2];
-            
-            if (tdName && tdFlavor) {
-                let nameVal = tdName.textContent || tdName.innerText;
-                let flavorVal = tdFlavor.textContent || tdFlavor.innerText;
-                
-                if (nameVal.toUpperCase().indexOf(filter) > -1 || flavorVal.toUpperCase().indexOf(filter) > -1) {
+            // Col 1 = Code Name, Col 2 = Product Name, Col 3 = Flavor
+            let tdCode   = tr[i].getElementsByTagName("td")[1];
+            let tdName   = tr[i].getElementsByTagName("td")[2];
+            let tdFlavor = tr[i].getElementsByTagName("td")[3];
+
+            if (tdName) {
+                let codeVal   = tdCode   ? (tdCode.textContent   || tdCode.innerText)   : '';
+                let nameVal   = tdName   ? (tdName.textContent   || tdName.innerText)   : '';
+                let flavorVal = tdFlavor ? (tdFlavor.textContent || tdFlavor.innerText) : '';
+
+                if (codeVal.toUpperCase().indexOf(filter) > -1 ||
+                    nameVal.toUpperCase().indexOf(filter) > -1  ||
+                    flavorVal.toUpperCase().indexOf(filter) > -1) {
                     tr[i].style.display = "";
                 } else {
                     tr[i].style.display = "none";
@@ -1988,6 +2005,10 @@ TEMPLATES["products.html"] = """
                             <label>Product Name / Description</label>
                             <input type="text" name="name" id="name" placeholder="Enter product name..." required>
                         </div>
+                        <div class="field">
+                            <label>Code Name <span style="color:var(--muted);font-weight:400;font-size:0.7rem;">(optional shortcut)</span></label>
+                            <input type="text" name="code_name" id="code_name" placeholder="e.g. CHILL-M, FLEX-01..." autocomplete="off">
+                        </div>
                     </div>
                 </div>
 
@@ -2033,6 +2054,7 @@ TEMPLATES["products.html"] = """
             <table class="prod-table" id="masterTable">
                 <thead>
                     <tr>
+                        <th>Code</th>
                         <th>Product Name</th>
                         <th>Stock</th>
                         <th>Price</th>
@@ -2044,6 +2066,13 @@ TEMPLATES["products.html"] = """
                 <tbody>
                     {% for key, p in products.items() %}
                     <tr>
+                        <td>
+                            {% if p.code_name %}
+                            <span style="background:var(--brand-light);color:var(--brand);padding:2px 8px;border-radius:6px;font-size:0.75rem;font-weight:800;font-family:monospace;white-space:nowrap;">{{ p.code_name }}</span>
+                            {% else %}
+                            <span style="color:var(--muted);font-size:0.75rem;">—</span>
+                            {% endif %}
+                        </td>
                         <td>
                             <strong>{{ p.name }}</strong><br>
                             <small style="color:var(--muted)">{{ p.flavor or '' }} {{ '| ' + p.mg if p.mg else '' }}</small>
@@ -2092,6 +2121,7 @@ function editProduct(key) {
     const p = productsData[key];
     document.getElementById('editing_key').value = key;
     document.getElementById('barcode').value = p.barcode || '';
+    document.getElementById('code_name').value = p.code_name || '';
     document.getElementById('name').value = p.name;
     document.getElementById('flavor').value = p.flavor || '';
     document.getElementById('type').value = p.type;
@@ -2107,6 +2137,7 @@ function resetForm() {
     document.getElementById('productForm').reset();
     document.getElementById('editing_key').value = '';
     document.getElementById('barcode').value = '';
+    document.getElementById('code_name').value = '';
     document.getElementById('qty_group').style.display = '';
     document.getElementById('imgPreview').style.display = 'none';
     document.getElementById('uploadHint').style.display = 'flex';
@@ -2854,7 +2885,7 @@ TEMPLATES["sales.html"] = """
                 <!-- Search Field -->
                 <div class="field search-wrap">
                     <label>Search Product Name</label>
-                    <input type="text" id="productSearch" placeholder="Type product name or flavor..." oninput="filterProducts()">
+                    <input type="text" id="productSearch" placeholder="Search by code name, name or flavor..." oninput="filterProducts()">
                     <input type="hidden" name="product_key" id="hiddenKey" required>
                     <div id="searchResults" class="search-results"></div>
                 </div>
@@ -3050,12 +3081,17 @@ function filterProducts() {
     // ── Normal product search ──────────────────────────────────────────────
     picker.style.display = 'none';
     const matches = Object.entries(productsData).filter(([id, p]) =>
-        p.name.toLowerCase().includes(q) || (p.flavor||'').toLowerCase().includes(q)
+        p.name.toLowerCase().includes(q) ||
+        (p.flavor||'').toLowerCase().includes(q) ||
+        (p.code_name||'').toLowerCase().includes(q)
     );
 
     div.innerHTML = matches.map(([id, p]) => `
         <div class="s-item" onclick="selectItem('${id}','${p.name} - ${p.flavor}',${p.price},${p.qty},${p.discount||0})">
-            <strong>${p.name} <span style="color:var(--brand)">${p.flavor||''}</span></strong>
+            <strong>
+                ${p.code_name ? `<span style="background:#ede9f8;color:#705194;padding:1px 7px;border-radius:5px;font-size:0.7rem;font-family:monospace;font-weight:800;margin-right:6px;">${p.code_name}</span>` : ''}
+                ${p.name} <span style="color:var(--brand)">${p.flavor||''}</span>
+            </strong>
             <small>Stock: ${p.qty} | ₱${p.price.toLocaleString()}${p.discount > 0 ? ` <span style="color:#f59e0b;font-weight:700;">(₱${p.discount.toLocaleString()} OFF)</span>` : ''}</small>
         </div>
     `).join('');
@@ -4083,6 +4119,7 @@ with app.app_context():
     try:
         with db.engine.connect() as conn:
             conn.execute(db.text("ALTER TABLE product ADD COLUMN IF NOT EXISTS discount FLOAT DEFAULT 0.0"))
+            conn.execute(db.text("ALTER TABLE product ADD COLUMN IF NOT EXISTS code_name VARCHAR(50)"))
             conn.commit()
     except Exception:
         pass  # Column already exists or DB doesn't support IF NOT EXISTS — safe to ignore
