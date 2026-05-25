@@ -234,9 +234,10 @@ def sales():
         if p and qty > 0 and p.qty >= qty:
             product_discount = p.discount or 0
             total_discount = product_discount + manual_discount
-            discounted_price = max(0, p.price - total_discount)
+            grand_total = max(0, (p.price * qty) - total_discount)
+            effective_unit_price = round(grand_total / qty, 4) if qty else 0
             p.qty -= qty
-            db.session.add(StockOutLog(name=p.name, flavor=p.flavor, category=p.type, qty=qty, price=discounted_price, cost=p.cost))
+            db.session.add(StockOutLog(name=p.name, flavor=p.flavor, category=p.type, qty=qty, price=effective_unit_price, cost=p.cost))
             db.session.commit()
             flash("Sale recorded successfully.", "success")
         else:
@@ -3120,13 +3121,13 @@ function calcTotal() {
     const productDiscount = parseFloat(document.getElementById('qtyInput').dataset.productDiscount) || 0;
     const manualDiscount = parseFloat(document.getElementById('manualDiscount').value) || 0;
     const totalDiscount = productDiscount + manualDiscount;
-    const finalPrice = Math.max(0, basePrice - totalDiscount);
-    const grandTotal = qty * finalPrice;
+    const subtotal = basePrice * qty;
+    const grandTotal = Math.max(0, subtotal - totalDiscount);
 
     const fmt = v => v.toLocaleString(undefined, {minimumFractionDigits:2});
     let label = `₱ ${fmt(grandTotal)}`;
     if (totalDiscount > 0) {
-        label += ` <span style="font-size:0.75rem;color:#f59e0b;font-weight:700;">(₱${fmt(basePrice)} − ₱${fmt(totalDiscount)}/unit = ₱${fmt(finalPrice)}/unit × ${qty})</span>`;
+        label += ` <span style="font-size:0.75rem;color:#f59e0b;font-weight:700;">(₱${fmt(subtotal)} − ₱${fmt(totalDiscount)} discount)</span>`;
     }
     document.getElementById('totalBox').innerHTML = label;
 }
