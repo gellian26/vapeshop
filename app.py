@@ -3092,7 +3092,7 @@ function filterProducts() {
                 ${p.code_name ? `<span style="background:#ede9f8;color:#705194;padding:1px 7px;border-radius:5px;font-size:0.7rem;font-family:monospace;font-weight:800;margin-right:6px;">${p.code_name}</span>` : ''}
                 ${p.name} <span style="color:var(--brand)">${p.flavor||''}</span>
             </strong>
-            <small>Stock: ${p.qty} | ₱${p.price.toLocaleString()}${p.discount > 0 ? ` <span style="color:#f59e0b;font-weight:700;">(₱${p.discount.toLocaleString()} OFF)</span>` : ''}</small>
+            <small>${p.mg ? `<span style="color:var(--muted);margin-right:6px;">${p.mg}</span> · ` : ''}Stock: ${p.qty} | ₱${p.price.toLocaleString()}${p.discount > 0 ? ` <span style="color:#f59e0b;font-weight:700;">(₱${p.discount.toLocaleString()} OFF)</span>` : ''}</small>
         </div>
     `).join('');
     div.style.display = matches.length ? 'block' : 'none';
