@@ -279,6 +279,63 @@ def reports():
 
 
 
+@app.route('/purchase_report')
+def purchase_report():
+    period = request.args.get('period', 'daily')
+    today = datetime.now().date()
+    start_date = today - timedelta(days=7) if period == 'weekly' else (today - timedelta(days=30) if period == 'monthly' else today)
+    start_date_str = start_date.strftime('%Y-%m-%d')
+
+    logs_in = StockInLog.query.filter(func.date(StockInLog.date) >= start_date_str).order_by(StockInLog.date.desc()).all()
+
+    # Summary stats
+    total_units = sum(l.qty for l in logs_in)
+    total_items = len(logs_in)
+
+    # Group by product for breakdown
+    product_breakdown = {}
+    for l in logs_in:
+        key = f"{l.name} {l.flavor or ''}".strip()
+        if key not in product_breakdown:
+            product_breakdown[key] = {'name': l.name, 'flavor': l.flavor or '', 'category': l.category or '', 'qty': 0, 'entries': 0}
+        product_breakdown[key]['qty'] += l.qty
+        product_breakdown[key]['entries'] += 1
+    product_breakdown = sorted(product_breakdown.values(), key=lambda x: x['qty'], reverse=True)
+
+    # Cost data from Product table joined by name+flavor
+    products_map = {(p.name, p.flavor or ''): p for p in Product.query.all()}
+    total_cost = 0.0
+    for item in product_breakdown:
+        p = products_map.get((item['name'], item['flavor']))
+        item['cost'] = p.cost if p else 0.0
+        item['total_cost'] = item['qty'] * item['cost']
+        total_cost += item['total_cost']
+
+    # Category breakdown
+    cat_breakdown = {}
+    for item in product_breakdown:
+        cat = item['category'] or 'Uncategorized'
+        if cat not in cat_breakdown:
+            cat_breakdown[cat] = 0
+        cat_breakdown[cat] += item['qty']
+
+    period_label = {'daily': 'Today', 'weekly': 'Last 7 Days', 'monthly': 'Last 30 Days'}[period]
+
+    return render_template('purchase_report.html',
+        logs_in=logs_in,
+        product_breakdown=product_breakdown,
+        cat_breakdown=cat_breakdown,
+        total_units=total_units,
+        total_items=total_items,
+        total_cost=total_cost,
+        date=today.strftime("%B %d, %Y"),
+        now=datetime.now().strftime("%H:%M"),
+        period=period,
+        period_label=period_label,
+        start_date=start_date.strftime("%B %d, %Y"),
+    )
+
+
 @app.route('/api/low_stock')
 def api_low_stock():
     items = Product.query.filter(Product.qty < 5).order_by(Product.qty.asc()).limit(10).all()
@@ -1082,6 +1139,7 @@ TEMPLATES["base.html"] = """
             <li><a href="/sales" class="{{ 'active' if request.path == '/sales' }}"><i class="fa-solid fa-cart-shopping"></i> <span>Sales</span></a></li>
             <li><a href="/products" class="{{ 'active' if request.path == '/products' }}"><i class="fa-solid fa-tags"></i> <span>Products</span></a></li>
             <li><a href="/reports" class="{{ 'active' if request.path == '/reports' }}"><i class="fa-solid fa-file-waveform"></i> <span>Reports</span></a></li>
+            <li><a href="/purchase_report" class="{{ 'active' if request.path == '/purchase_report' }}"><i class="fa-solid fa-basket-shopping"></i> <span>Purchase Report</span></a></li>
             <li><a href="/analytics" class="{{ 'active' if request.path == '/analytics' }}"><i class="fa-solid fa-chart-line"></i> <span>Analytics</span></a></li>
             <li><a href="/settings" class="{{ 'active' if request.path == '/settings' }}"><i class="fa-solid fa-gear"></i> <span>Settings</span></a></li>
         </ul>
@@ -4131,6 +4189,396 @@ const dz = document.getElementById('dropZone');
 ['dragleave','drop'].forEach(ev =>
     dz.addEventListener(ev, () => dz.classList.remove('dragover'))
 );
+</script>
+{% endblock %}
+"""
+
+TEMPLATES["purchase_report.html"] = """
+{% extends "base.html" %}
+
+{% block content %}
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+<style>
+    :root {
+        --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
+        --orange:#f59e0b; --blue:#3b82f6;
+        --grad:linear-gradient(135deg,#705194,#9b6fc4);
+        --bg:#f8f7ff;
+        --border:#e8e4f0; --text:#1e293b; --muted:#64748b;
+        --radius:16px; --radius-sm:10px;
+        --shadow:0 2px 10px rgba(112,81,148,.05);
+        --brand-navy: #162135;
+        --brand-purple: #705194;
+        --brand-green: #10b981;
+        --brand-red: #ef4444;
+        --soft-bg: #f8f7ff;
+        --border-light: #e8e4f0;
+    }
+
+    .report-ui-wrapper { max-width: 900px; margin: 0 auto; padding: 10px; }
+
+    .report-controls {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: white;
+        padding: 12px;
+        border-radius: var(--radius);
+        margin-bottom: 20px;
+        border: 1.5px solid var(--border);
+        box-shadow: var(--shadow);
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+
+    .period-selector {
+        display: flex;
+        background: #f1f5f9;
+        padding: 4px;
+        border-radius: 8px;
+        flex: 1;
+        min-width: 250px;
+    }
+    .period-btn {
+        text-decoration: none;
+        padding: 8px 12px;
+        flex: 1;
+        text-align: center;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: #64748b;
+        transition: 0.2s;
+    }
+    .period-btn.active { background: white; color: var(--brand); box-shadow: 0 2px 10px rgba(112,81,148,.1); font-weight:700; }
+
+    .btn-group {
+        display: flex;
+        gap: 8px;
+        flex: 1;
+        justify-content: flex-end;
+        min-width: 200px;
+    }
+    .btn-action {
+        flex: 1;
+        border: none;
+        padding: 10px;
+        border-radius: 8px;
+        font-weight: 700;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        font-size: 0.8rem;
+        color: white;
+    }
+    .btn-pdf { background: #475569; }
+    .btn-img { background: var(--brand-purple); }
+
+    #report-capture-area {
+        background: white;
+        width: 100%;
+        margin: 0 auto;
+        padding: 5vw;
+        color: var(--brand-navy);
+        font-family: 'Inter', sans-serif;
+        border: 1px solid var(--border-light);
+        position: relative;
+        box-sizing: border-box;
+    }
+
+    .doc-header {
+        text-align: center;
+        border-bottom: 2px solid var(--brand-navy);
+        padding-bottom: 20px;
+        margin-bottom: 30px;
+    }
+    .brand-info h2 { margin: 0; font-size: clamp(1.1rem, 4vw, 1.6rem); font-weight: 800; letter-spacing: 1px; }
+    .brand-info p  { margin: 5px 0 0; font-size: clamp(0.7rem, 2vw, 0.85rem); color: #64748b; text-transform: uppercase; }
+    .report-type-label { margin-top: 15px; font-size: clamp(0.9rem, 3vw, 1.1rem); font-weight: 700; color: var(--brand-purple); text-transform: uppercase; }
+    .report-date { font-size: 0.8rem; color: #94a3b8; margin-top: 5px; }
+    .report-period-badge {
+        display: inline-block;
+        margin-top: 8px;
+        padding: 3px 14px;
+        background: var(--brand-light);
+        color: var(--brand-purple);
+        border-radius: 99px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+    }
+
+    .report-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 15px;
+        margin-bottom: 30px;
+    }
+    .stat-card { background: var(--soft-bg); padding: 15px; border-radius: 12px; border: 1px solid var(--border-light); text-align: center; }
+    .stat-card label { display: block; font-size: 0.6rem; font-weight: 800; color: #94a3b8; text-transform: uppercase; margin-bottom: 5px; }
+    .stat-card .value { font-size: clamp(1.1rem, 4vw, 1.6rem); font-weight: 800; }
+    .stat-card .value.blue  { color: var(--blue); }
+    .stat-card .value.green { color: var(--brand-green); }
+    .stat-card .value.orange{ color: var(--orange); }
+
+    .table-responsive {
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        margin-bottom: 25px;
+        border-radius: 8px;
+    }
+    .swipe-hint { display: none; font-size: 0.65rem; color: #94a3b8; margin-bottom: 5px; text-align: right; font-style: italic; }
+
+    .report-table { width: 100%; border-collapse: collapse; min-width: 520px; }
+    .report-table th { background: #f1f5f9; text-align: left; padding: 10px; font-size: 0.7rem; color: #475569; border: 1px solid var(--border-light); text-transform: uppercase; letter-spacing: 0.4px; }
+    .report-table td { padding: 10px; font-size: 0.8rem; border: 1px solid var(--border-light); vertical-align: middle; }
+    .report-table tbody tr:nth-child(even) { background: #fafafa; }
+
+    .section-heading {
+        font-size: 0.75rem; font-weight: 800; text-transform: uppercase;
+        margin-bottom: 12px; color: #475569;
+        display: flex; align-items: center; gap: 8px;
+    }
+    .section-heading::after { content: ""; flex: 1; height: 1px; background: var(--border-light); }
+
+    .cat-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 10px;
+        margin-bottom: 28px;
+    }
+    .cat-chip {
+        background: var(--soft-bg);
+        border: 1px solid var(--border-light);
+        border-radius: 10px;
+        padding: 10px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+    .cat-chip .cat-name { font-size: 0.72rem; font-weight: 700; color: var(--muted); text-transform: capitalize; }
+    .cat-chip .cat-qty  { font-size: 1.15rem; font-weight: 800; color: var(--brand-purple); }
+
+    /* Log table */
+    .log-table { width: 100%; border-collapse: collapse; min-width: 460px; }
+    .log-table th { background: #f1f5f9; text-align: left; padding: 8px 10px; font-size: 0.68rem; color: #475569; border: 1px solid var(--border-light); text-transform: uppercase; }
+    .log-table td { padding: 8px 10px; font-size: 0.78rem; border: 1px solid var(--border-light); }
+    .log-table tbody tr:nth-child(even) { background: #fafafa; }
+
+    .qty-badge {
+        display: inline-block;
+        padding: 2px 9px;
+        background: #ecfdf5;
+        color: #065f46;
+        border-radius: 99px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        border: 1px solid #a7f3d0;
+    }
+
+    .doc-footer {
+        margin-top: 30px;
+        padding-top: 15px;
+        border-top: 1px solid var(--border-light);
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.6rem;
+        color: #94a3b8;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    @media (max-width: 600px) {
+        .report-ui-wrapper { padding: 5px; }
+        .report-controls { padding: 10px; border-radius: 0; margin-left: -5px; margin-right: -5px; }
+        .swipe-hint { display: block; }
+        #report-capture-area { padding: 20px 15px; border-left: none; border-right: none; }
+        .btn-group { min-width: 100%; }
+        .period-selector { min-width: 100%; }
+    }
+
+    @media print {
+        nav, .sidebar, .mobile-header, .mobile-toggle, .no-print, header, .swipe-hint { display: none !important; }
+        body { background: white; margin: 0; padding: 0; }
+        .main-content { margin-left: 0 !important; width: 100% !important; padding: 0 !important; }
+        #report-capture-area { border: none; box-shadow: none; padding: 40px; width: 100%; }
+        .table-responsive { overflow: visible !important; }
+    }
+</style>
+
+<div class="report-ui-wrapper">
+
+    <!-- Controls -->
+    <div class="report-controls no-print">
+        <div class="period-selector">
+            <a href="/purchase_report?period=daily"   class="period-btn {{ 'active' if period == 'daily' }}">Today</a>
+            <a href="/purchase_report?period=weekly"  class="period-btn {{ 'active' if period == 'weekly' }}">Last 7 Days</a>
+            <a href="/purchase_report?period=monthly" class="period-btn {{ 'active' if period == 'monthly' }}">Last 30 Days</a>
+        </div>
+
+        <div class="btn-group">
+            <button onclick="window.print()" class="btn-action btn-pdf">
+                <i class="fas fa-file-pdf"></i> PDF
+            </button>
+            <button onclick="downloadReportImage()" class="btn-action btn-img">
+                <i class="fas fa-image"></i> IMAGE
+            </button>
+        </div>
+    </div>
+
+    <!-- The Document -->
+    <div id="report-capture-area">
+
+        <!-- Header -->
+        <div class="doc-header">
+            <div class="brand-info">
+                <h2>F.L.E.X VAPE SHOP</h2>
+                <p>Inventory Management System</p>
+            </div>
+            <div class="report-type-label">Purchase Report</div>
+            <div class="report-date">Issued: {{ date }}</div>
+            <div class="report-period-badge"><i class="fas fa-calendar-alt"></i> &nbsp;{{ period_label }} &mdash; from {{ start_date }}</div>
+        </div>
+
+        <!-- KPI Summary -->
+        <div class="report-grid">
+            <div class="stat-card">
+                <label>Total Units Received</label>
+                <div class="value blue">{{ total_units }}</div>
+            </div>
+            <div class="stat-card">
+                <label>Stock-In Entries</label>
+                <div class="value orange">{{ total_items }}</div>
+            </div>
+            <div class="stat-card">
+                <label>Estimated Purchase Cost</label>
+                <div class="value green">₱{{ "{:,.2f}".format(total_cost) }}</div>
+            </div>
+        </div>
+
+        <!-- Category Breakdown -->
+        {% if cat_breakdown %}
+        <div class="section-heading">Stock-In by Category</div>
+        <div class="cat-grid" style="margin-bottom:28px;">
+            {% for cat, qty in cat_breakdown.items() %}
+            <div class="cat-chip">
+                <span class="cat-name">{{ cat }}</span>
+                <span class="cat-qty">{{ qty }} units</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <!-- Product Breakdown Table -->
+        <div class="section-heading">Product Purchase Breakdown</div>
+        <div class="swipe-hint">Swipe table to see more &rarr;</div>
+        <div class="table-responsive">
+            <table class="report-table">
+                <thead>
+                    <tr>
+                        <th>Product</th>
+                        <th>Flavor</th>
+                        <th>Category</th>
+                        <th style="text-align:center;">Entries</th>
+                        <th style="text-align:center;">Units In</th>
+                        <th style="text-align:right;">Unit Cost</th>
+                        <th style="text-align:right;">Total Cost</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in product_breakdown %}
+                    <tr>
+                        <td><strong>{{ item.name }}</strong></td>
+                        <td style="color:var(--muted);">{{ item.flavor or '—' }}</td>
+                        <td style="color:var(--muted);text-transform:capitalize;">{{ item.category or '—' }}</td>
+                        <td style="text-align:center;">{{ item.entries }}</td>
+                        <td style="text-align:center;">
+                            <span class="qty-badge">+{{ item.qty }}</span>
+                        </td>
+                        <td style="text-align:right;">
+                            {% if item.cost > 0 %}₱{{ "{:,.2f}".format(item.cost) }}{% else %}<span style="color:var(--muted);">—</span>{% endif %}
+                        </td>
+                        <td style="text-align:right;font-weight:700;color:var(--brand-green);">
+                            {% if item.total_cost > 0 %}₱{{ "{:,.2f}".format(item.total_cost) }}{% else %}<span style="color:var(--muted);">—</span>{% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" style="text-align:center;padding:2rem;color:var(--muted);">
+                            <i class="fas fa-inbox fa-2x" style="opacity:0.3;display:block;margin-bottom:8px;"></i>
+                            No stock-in records for this period.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Detailed Log -->
+        <div class="section-heading">Detailed Stock-In Log</div>
+        <div class="swipe-hint">Swipe table to see more &rarr;</div>
+        <div class="table-responsive">
+            <table class="log-table">
+                <thead>
+                    <tr>
+                        <th>Date &amp; Time</th>
+                        <th>Product</th>
+                        <th>Flavor</th>
+                        <th>Category</th>
+                        <th style="text-align:center;">Qty In</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs_in %}
+                    <tr>
+                        <td style="white-space:nowrap;color:var(--muted);font-size:0.72rem;">{{ log.date.strftime('%b %d, %Y %I:%M %p') }}</td>
+                        <td><strong>{{ log.name }}</strong></td>
+                        <td style="color:var(--muted);">{{ log.flavor or '—' }}</td>
+                        <td style="color:var(--muted);text-transform:capitalize;">{{ log.category or '—' }}</td>
+                        <td style="text-align:center;"><span class="qty-badge">+{{ log.qty }}</span></td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="5" style="text-align:center;padding:1.5rem;color:var(--muted);">No entries found.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="doc-footer">
+            <span>Auth: {{ now }}</span>
+            <span>F.L.E.X System &bull; Purchase Record</span>
+        </div>
+    </div><!-- /report-capture-area -->
+</div>
+
+<script>
+async function downloadReportImage() {
+    const reportArea = document.getElementById('report-capture-area');
+    const downloadBtn = document.querySelector('.btn-img');
+    downloadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>...';
+    downloadBtn.disabled = true;
+    try {
+        const canvas = await html2canvas(reportArea, {
+            scale: 3, useCORS: true, backgroundColor: "#ffffff",
+        });
+        const link = document.createElement('a');
+        link.href = canvas.toDataURL("image/png", 1.0);
+        link.download = `FLEX_Purchase_Report_{{ date }}.png`;
+        link.click();
+    } catch (err) {
+        alert("Export failed.");
+    } finally {
+        downloadBtn.innerHTML = '<i class="fas fa-image"></i> IMAGE';
+        downloadBtn.disabled = false;
+    }
+}
 </script>
 {% endblock %}
 """
