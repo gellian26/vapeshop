@@ -74,6 +74,38 @@ class StockOutLog(db.Model):
     price = db.Column(db.Float, default=0.0)
     cost = db.Column(db.Float, default=0.0)
 
+class Supplier(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    contact = db.Column(db.String(100))
+    address = db.Column(db.String(255))
+    phone = db.Column(db.String(50))
+    email = db.Column(db.String(120))
+    date_added = db.Column(db.DateTime, default=datetime.now)
+
+class PurchaseOrder(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    order_number = db.Column(db.String(30), unique=True, nullable=False)
+    supplier_id = db.Column(db.Integer, db.ForeignKey('supplier.id'), nullable=True)
+    status = db.Column(db.String(20), default='draft')  # draft, sent, received, cancelled
+    notes = db.Column(db.Text)
+    date_created = db.Column(db.DateTime, default=datetime.now)
+    date_updated = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
+    supplier = db.relationship('Supplier', backref='purchase_orders')
+    items = db.relationship('PurchaseOrderItem', backref='purchase_order', cascade='all, delete-orphan')
+
+class PurchaseOrderItem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.Integer, db.ForeignKey('purchase_order.id'), nullable=False)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=True)
+    product_name = db.Column(db.String(100), nullable=False)
+    flavor = db.Column(db.String(100))
+    category = db.Column(db.String(50))
+    qty_ordered = db.Column(db.Integer, default=0)
+    qty_received = db.Column(db.Integer, default=0)
+    unit_cost = db.Column(db.Float, default=0.0)
+    product = db.relationship('Product', backref='order_items')
+
 # --- 3. LOGIN PROTECTION ---
 # Set FLEX_USER and FLEX_PASS environment variables in production.
 ADMIN_USER = os.environ.get("FLEX_USER", "flexinventory")
@@ -255,27 +287,79 @@ def sales():
 def reports():
     period = request.args.get('period', 'daily')
     today = datetime.now().date()
-    start_date = today - timedelta(days=7) if period == 'weekly' else today
+    if period == 'weekly':
+        start_date = today - timedelta(days=7)
+        period_label = 'Last 7 Days'
+    elif period == 'monthly':
+        start_date = today - timedelta(days=30)
+        period_label = 'Last 30 Days'
+    else:
+        start_date = today
+        period_label = 'Today'
     start_date_str = start_date.strftime('%Y-%m-%d')
-    
+
     logs_out = StockOutLog.query.filter(func.date(StockOutLog.date) >= start_date_str).all()
-    logs_in = StockInLog.query.filter(func.date(StockInLog.date) >= start_date_str).all()
-    
+    logs_in  = StockInLog.query.filter(func.date(StockInLog.date)  >= start_date_str).all()
+
+    # Revenue & volume metrics
+    revenue     = sum(l.qty * l.price for l in logs_out)
+    cost_total  = sum(l.qty * l.cost  for l in logs_out)
+    gross_profit = revenue - cost_total
+    units_sold  = sum(l.qty for l in logs_out)
+    units_in    = sum(l.qty for l in logs_in)
+    sales_count = len(logs_out)
+    avg_txn     = revenue / sales_count if sales_count else 0
+
+    # Stock movement per product
     movement = []
     for p in Product.query.all():
-        sold = sum(l.qty for l in logs_out if l.name == p.name and l.flavor == p.flavor)
-        added = sum(l.qty for l in logs_in if l.name == p.name and l.flavor == p.flavor)
+        sold  = sum(l.qty for l in logs_out if l.name == p.name and l.flavor == p.flavor)
+        added = sum(l.qty for l in logs_in  if l.name == p.name and l.flavor == p.flavor)
         opening = p.qty + sold - added
         if opening > 0 or added > 0 or sold > 0:
-            movement.append({'name': f"{p.name} {p.flavor}", 'open': opening, 'new': added, 'sold': sold, 'end': p.qty})
+            net = added - sold
+            movement.append({
+                'name': p.name, 'flavor': p.flavor or '-',
+                'category': p.type or '-',
+                'open': opening, 'new': added, 'sold': sold,
+                'end': p.qty, 'net': net,
+                'revenue': sum(l.qty * l.price for l in logs_out if l.name == p.name and l.flavor == p.flavor)
+            })
+    movement.sort(key=lambda x: x['sold'], reverse=True)
 
-    # Critical Low Stock Warning mapping
-    low_stocks = {}
-    low_stock_items = Product.query.filter(Product.qty < 5).all()
-    if low_stock_items:
-        low_stocks["low"] = low_stock_items
+    # Top sellers
+    top_sellers = [m for m in movement if m['sold'] > 0][:5]
 
-    return render_template('reports.html', movement=movement, revenue=sum(l.qty*l.price for l in logs_out), sales_count=len(logs_out), date=today.strftime("%B %d, %Y"), now=datetime.now().strftime("%H:%M"), period=period, report_label="Inventory Audit Report", low_stocks=low_stocks)
+    # Category performance
+    cat_perf = {}
+    for m in movement:
+        cat = m['category'] or 'Other'
+        if cat not in cat_perf:
+            cat_perf[cat] = {'sold': 0, 'revenue': 0, 'in': 0}
+        cat_perf[cat]['sold']    += m['sold']
+        cat_perf[cat]['revenue'] += m['revenue']
+        cat_perf[cat]['in']      += m['new']
+    cat_perf = sorted(cat_perf.items(), key=lambda x: x[1]['revenue'], reverse=True)
+
+    # Severity-tiered low stock
+    all_products = Product.query.all()
+    out_of_stock  = [p for p in all_products if p.qty <= 0]
+    critical_stock= [p for p in all_products if 1 <= p.qty <= 2]
+    low_stock     = [p for p in all_products if 3 <= p.qty <= 4]
+    warn_count    = len(out_of_stock) + len(critical_stock) + len(low_stock)
+    low_stocks    = {'out': out_of_stock, 'critical': critical_stock, 'low': low_stock}
+
+    return render_template('reports.html',
+        movement=movement, top_sellers=top_sellers, cat_perf=cat_perf,
+        revenue=revenue, gross_profit=gross_profit, avg_txn=avg_txn,
+        sales_count=sales_count, units_sold=units_sold, units_in=units_in,
+        date=today.strftime('%B %d, %Y'),
+        start_date=start_date.strftime('%b %d'), end_date=today.strftime('%b %d, %Y'),
+        now=datetime.now().strftime('%H:%M'),
+        period=period, period_label=period_label,
+        report_label='Inventory Audit Report',
+        low_stocks=low_stocks, warn_count=warn_count
+    )
 
 
 
@@ -340,6 +424,271 @@ def purchase_report():
 def api_low_stock():
     items = Product.query.filter(Product.qty < 5).order_by(Product.qty.asc()).limit(10).all()
     return jsonify([{"name": p.name, "flavor": p.flavor or "", "qty": p.qty} for p in items])
+
+# ──────────────────────────────────────────────────────────────────────
+# SUPPLIER MANAGEMENT
+# ──────────────────────────────────────────────────────────────────────
+@app.route('/suppliers')
+def suppliers():
+    suppliers_list = Supplier.query.order_by(Supplier.name).all()
+    # Stats for dashboard
+    total_suppliers = len(suppliers_list)
+    total_pos = PurchaseOrder.query.count()
+    active_pos = PurchaseOrder.query.filter(PurchaseOrder.status.in_(['draft', 'sent'])).count()
+    total_spent = sum(sum(item.qty_ordered * item.unit_cost for item in o.items) for o in PurchaseOrder.query.filter(PurchaseOrder.status == 'received').all())
+    return render_template('suppliers.html',
+        suppliers=suppliers_list,
+        total_suppliers=total_suppliers,
+        total_pos=total_pos,
+        active_pos=active_pos,
+        total_spent=total_spent)
+
+@app.route('/supplier/add', methods=['POST'])
+def supplier_add():
+    name = request.form.get('name', '').strip()
+    if not name:
+        flash('Supplier name is required.', 'error')
+        return redirect('/suppliers')
+    s = Supplier(
+        name=name,
+        contact=request.form.get('contact', '').strip(),
+        address=request.form.get('address', '').strip(),
+        phone=request.form.get('phone', '').strip(),
+        email=request.form.get('email', '').strip(),
+    )
+    db.session.add(s)
+    db.session.commit()
+    flash(f'Supplier "{name}" added.', 'success')
+    return redirect('/suppliers')
+
+@app.route('/supplier/edit/<int:id>', methods=['POST'])
+def supplier_edit(id):
+    s = Supplier.query.get_or_404(id)
+    s.name = request.form.get('name', s.name).strip()
+    s.contact = request.form.get('contact', s.contact or '').strip()
+    s.address = request.form.get('address', s.address or '').strip()
+    s.phone = request.form.get('phone', s.phone or '').strip()
+    s.email = request.form.get('email', s.email or '').strip()
+    db.session.commit()
+    flash(f'Supplier "{s.name}" updated.', 'success')
+    return redirect('/suppliers')
+
+@app.route('/supplier/delete/<int:id>', methods=['POST'])
+def supplier_delete(id):
+    s = Supplier.query.get_or_404(id)
+    db.session.delete(s)
+    db.session.commit()
+    flash(f'Supplier "{s.name}" deleted.', 'success')
+    return redirect('/suppliers')
+
+# ──────────────────────────────────────────────────────────────────────
+# PURCHASE ORDERS
+# ──────────────────────────────────────────────────────────────────────
+@app.route('/purchase_orders')
+def purchase_orders():
+    orders = PurchaseOrder.query.order_by(PurchaseOrder.date_created.desc()).all()
+    # Precompute total cost per order
+    order_totals = {}
+    for o in orders:
+        order_totals[o.id] = sum(item.qty_ordered * item.unit_cost for item in o.items)
+    # Stats
+    draft_count = sum(1 for o in orders if o.status == 'draft')
+    sent_count = sum(1 for o in orders if o.status == 'sent')
+    received_count = sum(1 for o in orders if o.status == 'received')
+    total_value = sum(order_totals.get(o.id, 0) for o in orders)
+    return render_template('purchase_orders.html',
+        orders=orders,
+        order_totals=order_totals,
+        draft_count=draft_count,
+        sent_count=sent_count,
+        received_count=received_count,
+        total_value=total_value)
+
+@app.route('/purchase_order/new')
+def purchase_order_new():
+    suppliers_list = Supplier.query.order_by(Supplier.name).all()
+    products = Product.query.order_by(Product.name).all()
+    return render_template('purchase_order_form.html',
+        suppliers=suppliers_list, products=products, order=None, order_items=[])
+
+@app.route('/purchase_order/create', methods=['POST'])
+def purchase_order_create():
+    import json as _json
+    supplier_id = request.form.get('supplier_id', type=int)
+    notes = request.form.get('notes', '').strip()
+    items_json = request.form.get('items', '[]')
+
+    # Generate order number: PO-YYYYMMDD-XXXX
+    today_str = datetime.now().strftime('%Y%m%d')
+    last_order = PurchaseOrder.query.filter(
+        PurchaseOrder.order_number.like(f'PO-{today_str}-%')
+    ).order_by(PurchaseOrder.id.desc()).first()
+    seq = 1
+    if last_order:
+        try:
+            seq = int(last_order.order_number.split('-')[-1]) + 1
+        except ValueError:
+            seq = 1
+    order_number = f'PO-{today_str}-{seq:04d}'
+
+    order = PurchaseOrder(
+        order_number=order_number,
+        supplier_id=supplier_id if supplier_id else None,
+        notes=notes,
+        status='draft',
+    )
+    db.session.add(order)
+    db.session.flush()  # get order.id
+
+    items_data = _json.loads(items_json)
+    for item in items_data:
+        poi = PurchaseOrderItem(
+            order_id=order.id,
+            product_id=item.get('product_id'),
+            product_name=item.get('product_name', ''),
+            flavor=item.get('flavor', ''),
+            category=item.get('category', ''),
+            qty_ordered=int(item.get('qty_ordered', 0)),
+            unit_cost=float(item.get('unit_cost', 0)),
+        )
+        db.session.add(poi)
+
+    db.session.commit()
+    flash(f'Purchase Order {order_number} created.', 'success')
+    return redirect(f'/purchase_order/{order.id}')
+
+@app.route('/purchase_order/<int:id>')
+def purchase_order_view(id):
+    order = PurchaseOrder.query.get_or_404(id)
+    return render_template('purchase_order_detail.html', order=order)
+
+@app.route('/purchase_order/<int:id>/edit')
+def purchase_order_edit(id):
+    order = PurchaseOrder.query.get_or_404(id)
+    suppliers_list = Supplier.query.order_by(Supplier.name).all()
+    products = Product.query.order_by(Product.name).all()
+    return render_template('purchase_order_form.html',
+        suppliers=suppliers_list, products=products, order=order,
+        order_items=[{
+            'product_id': i.product_id,
+            'product_name': i.product_name,
+            'flavor': i.flavor or '',
+            'category': i.category or '',
+            'qty_ordered': i.qty_ordered,
+            'unit_cost': i.unit_cost,
+        } for i in order.items])
+
+@app.route('/purchase_order/<int:id>/update', methods=['POST'])
+def purchase_order_update(id):
+    import json as _json
+    order = PurchaseOrder.query.get_or_404(id)
+    order.supplier_id = request.form.get('supplier_id', type=int) or None
+    order.notes = request.form.get('notes', '').strip()
+    order.date_updated = datetime.now()
+
+    # Remove existing items and re-add
+    for item in order.items:
+        db.session.delete(item)
+
+    items_data = _json.loads(request.form.get('items', '[]'))
+    for item in items_data:
+        poi = PurchaseOrderItem(
+            order_id=order.id,
+            product_id=item.get('product_id'),
+            product_name=item.get('product_name', ''),
+            flavor=item.get('flavor', ''),
+            category=item.get('category', ''),
+            qty_ordered=int(item.get('qty_ordered', 0)),
+            unit_cost=float(item.get('unit_cost', 0)),
+        )
+        db.session.add(poi)
+
+    db.session.commit()
+    flash(f'Purchase Order {order.order_number} updated.', 'success')
+    return redirect(f'/purchase_order/{order.id}')
+
+@app.route('/purchase_order/<int:id>/status', methods=['POST'])
+def purchase_order_status(id):
+    order = PurchaseOrder.query.get_or_404(id)
+    new_status = request.form.get('status', order.status)
+    order.status = new_status
+    order.date_updated = datetime.now()
+
+    # If marking as received, add stock to inventory
+    if new_status == 'received':
+        for item in order.items:
+            item.qty_received = item.qty_ordered
+            if item.product_id:
+                product = Product.query.get(item.product_id)
+                if product:
+                    product.qty += item.qty_ordered
+            # Log stock-in
+            sil = StockInLog(
+                name=item.product_name,
+                flavor=item.flavor or '',
+                category=item.category or '',
+                qty=item.qty_ordered,
+            )
+            db.session.add(sil)
+
+    db.session.commit()
+    flash(f'Purchase Order {order.order_number} marked as {new_status}.', 'success')
+    return redirect(f'/purchase_order/{order.id}')
+
+@app.route('/purchase_order/<int:id>/delete', methods=['POST'])
+def purchase_order_delete(id):
+    order = PurchaseOrder.query.get_or_404(id)
+    db.session.delete(order)
+    db.session.commit()
+    flash(f'Purchase Order {order.order_number} deleted.', 'success')
+    return redirect('/purchase_orders')
+
+@app.route('/api/purchase_report_chart')
+def api_purchase_report_chart():
+    period = request.args.get('period', 'daily')
+    today = datetime.now().date()
+    if period == 'weekly':
+        start_date = today - timedelta(days=7)
+    elif period == 'monthly':
+        start_date = today - timedelta(days=30)
+    else:
+        start_date = today
+
+    start_date_str = start_date.strftime('%Y-%m-%d')
+    logs_in = StockInLog.query.filter(func.date(StockInLog.date) >= start_date_str).all()
+
+    # Daily trend data
+    daily_data = {}
+    for l in logs_in:
+        day_key = l.date.strftime('%Y-%m-%d')
+        daily_data[day_key] = daily_data.get(day_key, 0) + l.qty
+
+    # Category breakdown
+    cat_data = {}
+    for l in logs_in:
+        cat = l.category or 'Uncategorized'
+        cat_data[cat] = cat_data.get(cat, 0) + l.qty
+
+    # Sort daily data
+    sorted_days = sorted(daily_data.keys())
+    chart_labels = [datetime.strptime(d, '%Y-%m-%d').strftime('%b %d') for d in sorted_days]
+    chart_values = [daily_data[d] for d in sorted_days]
+
+    return jsonify({
+        'trend': {'labels': chart_labels, 'values': chart_values},
+        'categories': {'labels': list(cat_data.keys()), 'values': list(cat_data.values())},
+        'total_units': sum(l.qty for l in logs_in),
+        'total_entries': len(logs_in),
+    })
+
+@app.route('/api/purchase_order_item/<int:item_id>/qty', methods=['POST'])
+def api_update_po_item_qty(item_id):
+    item = PurchaseOrderItem.query.get_or_404(item_id)
+    data = request.get_json()
+    item.qty_ordered = data.get('qty_ordered', item.qty_ordered)
+    db.session.commit()
+    return jsonify({'success': True, 'qty_ordered': item.qty_ordered})
+
 
 @app.route('/analytics')
 def analytics():
@@ -930,7 +1279,11 @@ TEMPLATES["base.html"] = """
         .divider { height: 1px; background: rgba(255,255,255,0.08); margin: 15px 25px; }
         .menu-label { padding: 10px 25px; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1.5px; color: #576c8c; font-weight: 700; }
 
-        .nav-links { list-style: none; flex-grow: 1; padding: 0 15px; }
+        .nav-links { list-style: none; flex-grow: 1; padding: 0 15px; overflow-y: auto; }
+        .nav-links::-webkit-scrollbar { width: 5px; }
+        .nav-links::-webkit-scrollbar-track { background: transparent; }
+        .nav-links::-webkit-scrollbar-thumb { background: rgba(112,81,148,0.4); border-radius: 10px; }
+        .nav-links::-webkit-scrollbar-thumb:hover { background: rgba(112,81,148,0.7); }
         .nav-links li { margin-bottom: 4px; }
 
         /* Staggered sidebar item entrance */
@@ -1091,6 +1444,30 @@ TEMPLATES["base.html"] = """
                 transition-duration: 0.01ms !important;
             }
         }
+
+        /* ═══════════════════════════════════════
+           GLOBAL PRINT RESET
+           Strips the sidebar-offset body layout.
+           Page templates add the visibility trick
+           on top of this to isolate their content.
+        ═══════════════════════════════════════ */
+        @media print {
+            html, body {
+                display: block !important;
+                width: 100% !important; height: auto !important;
+                margin: 0 !important; padding: 0 !important;
+                background: white !important;
+                overflow: visible !important;
+            }
+            .sidebar, .mobile-header, .sidebar-overlay,
+            .flash-container, #fsScannerContainer { display: none !important; }
+            .main-content {
+                margin-left: 0 !important;
+                width: 100% !important;
+                padding: 0 !important;
+                display: block !important;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1140,6 +1517,8 @@ TEMPLATES["base.html"] = """
             <li><a href="/products" class="{{ 'active' if request.path == '/products' }}"><i class="fa-solid fa-tags"></i> <span>Products</span></a></li>
             <li><a href="/reports" class="{{ 'active' if request.path == '/reports' }}"><i class="fa-solid fa-file-waveform"></i> <span>Reports</span></a></li>
             <li><a href="/purchase_report" class="{{ 'active' if request.path == '/purchase_report' }}"><i class="fa-solid fa-basket-shopping"></i> <span>Purchase Report</span></a></li>
+            <li><a href="/purchase_orders" class="{{ 'active' if request.path.startswith('/purchase_order') }}"><i class="fa-solid fa-file-invoice"></i> <span>Purchase Orders</span></a></li>
+            <li><a href="/suppliers" class="{{ 'active' if request.path == '/suppliers' }}"><i class="fa-solid fa-truck"></i> <span>Suppliers</span></a></li>
             <li><a href="/analytics" class="{{ 'active' if request.path == '/analytics' }}"><i class="fa-solid fa-chart-line"></i> <span>Analytics</span></a></li>
             <li><a href="/settings" class="{{ 'active' if request.path == '/settings' }}"><i class="fa-solid fa-gear"></i> <span>Settings</span></a></li>
         </ul>
@@ -1643,7 +2022,12 @@ TEMPLATES["inventory.html"] = """
     .search-box input:focus { border-color: #705194; outline: none; box-shadow: 0 0 0 3px rgba(112, 81, 148, 0.1); }
 
     /* --- TABLE STYLING --- */
-    .table-responsive { width: 100%; overflow-x: auto; border-radius: 12px; }
+    .table-responsive {
+        width: 100%; overflow-x: auto; border-radius: 12px;
+        scrollbar-width: none;        /* Firefox */
+        -ms-overflow-style: none;     /* IE / Edge */
+    }
+    .table-responsive::-webkit-scrollbar { display: none; } /* Chrome / Safari */
     .product-table { width: 100%; border-collapse: collapse; min-width: 1000px; }
     .product-table th { 
         text-align: left; padding: 15px; font-size: 0.65rem; text-transform: uppercase; 
@@ -1672,31 +2056,209 @@ TEMPLATES["inventory.html"] = """
     .dot-ok { background: #10b981; }
     .dot-low { background: #ef4444; }
 
+    /* --- PRINT BUTTON --- */
+    .print-btn {
+        display: inline-flex; align-items: center; gap: 8px;
+        padding: 9px 20px; border-radius: 50px;
+        background: #705194; color: white; border: none;
+        font-size: 0.8rem; font-weight: 700; cursor: pointer;
+        box-shadow: 0 4px 12px rgba(112,81,148,0.3);
+        transition: 0.2s; white-space: nowrap;
+    }
+    .print-btn:hover { background: #5a3d7a; transform: translateY(-1px); box-shadow: 0 6px 18px rgba(112,81,148,0.4); }
+    .print-btn:active { transform: translateY(0); }
+
+    .header-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+    /* ─── PRINT-ONLY HEADER (invisible on screen, visible in print) ─── */
+    .print-doc-header { display: none; }
+
+    /* ─── PRINT STYLES ─── */
+    @page {
+        size: A4 landscape;
+        margin: 18mm 14mm 16mm;
+    }
+    @media print {
+        /* ── Hide all UI chrome ── */
+        .sidebar, .mobile-header, .mobile-toggle, .no-print,
+        .cat-filters, .header-right, .search-box,
+        .flash-container, #invPrintModal,
+        .list-header > div:last-child { display: none !important; }
+
+        html, body { background: white !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .main-content { margin-left: 0 !important; width: 100% !important; padding: 0 !important; }
+        .inventory-container { padding: 0 !important; }
+        .header-flex { display: none !important; }
+
+        /* ── Show print-only header ── */
+        .print-doc-header {
+            display: block !important;
+            padding: 0 0 18px; margin-bottom: 18px;
+            border-bottom: 3px solid #162135;
+        }
+        .pdh-top { display: flex; justify-content: space-between; align-items: flex-end; }
+        .pdh-brand h1 {
+            font-size: 1.5rem; font-weight: 900; letter-spacing: 1.5px;
+            color: #162135; margin: 0 0 3px;
+        }
+        .pdh-brand p { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin: 0; }
+        .pdh-meta { text-align: right; }
+        .pdh-meta .pdh-report-type {
+            font-size: 0.9rem; font-weight: 800; color: #705194;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .pdh-meta .pdh-date { font-size: 0.68rem; color: #94a3b8; margin-top: 3px; }
+        .pdh-summary {
+            display: flex; gap: 0; margin-top: 14px;
+            border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;
+        }
+        .pdh-stat {
+            flex: 1; padding: 10px 16px; border-right: 1px solid #e2e8f0; text-align: center;
+        }
+        .pdh-stat:last-child { border-right: none; }
+        .pdh-stat-label { font-size: 0.55rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; }
+        .pdh-stat-value { font-size: 1.05rem; font-weight: 900; color: #162135; margin-top: 2px; }
+        .pdh-stat-value.c-green  { color: #10b981; }
+        .pdh-stat-value.c-red    { color: #ef4444; }
+        .pdh-stat-value.c-purple { color: #705194; }
+
+        /* ── Card & table ── */
+        .list-card { box-shadow: none !important; border: none !important; padding: 0 !important; }
+        .list-header { display: none !important; }
+        .table-responsive { overflow: visible !important; }
+        .product-table { min-width: unset !important; width: 100% !important; font-size: 0.7rem !important; border-collapse: collapse; }
+        .product-table th {
+            padding: 7px 9px !important; background: #162135 !important;
+            color: white !important; font-size: 0.58rem !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .product-table td { padding: 6px 9px !important; border-bottom: 1px solid #f1f5f9 !important; }
+        .product-table tbody tr:nth-child(even) td { background: #f8f9ff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+        /* ── Hide image column ── */
+        .product-table th:first-child,
+        .product-table td:first-child { display: none !important; }
+
+        /* ── Stock pill colors in print ── */
+        .stock-pill { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .stock-ok   { background: #d1fae5 !important; color: #065f46 !important; }
+        .stock-low  { background: #fee2e2 !important; color: #991b1b !important; }
+        .stock-out  { background: #f3f4f6 !important; color: #4b5563 !important; }
+        .badge-cat  { background: #e0e7ff !important; color: #4338ca !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+        /* ── Print footer ── */
+        .print-doc-footer {
+            display: flex !important; justify-content: space-between; align-items: center;
+            margin-top: 18px; padding-top: 10px; border-top: 1px solid #e2e8f0;
+            font-size: 0.58rem; color: #94a3b8;
+        }
+        .print-doc-footer-hidden { display: none; }
+
+        /* ── Page breaks for long tables ── */
+        .product-table thead { display: table-header-group; }
+        .product-table tbody tr { page-break-inside: avoid; }
+    }
+
     @media (max-width: 768px) {
         .header-flex { flex-direction: column; align-items: flex-start; gap: 15px; }
         .list-header { flex-direction: column; align-items: stretch; }
         .search-box { max-width: 100%; }
     }
+
+    /* ─── PRINT PREVIEW OVERLAY ─── */
+    #invPrintModal {
+        display: none;
+        position: fixed; inset: 0; z-index: 9999;
+        background: rgba(15,23,42,0.72);
+        overflow-y: auto;
+        padding: 36px 20px 100px;
+    }
+    #invPrintModal.open { display: block; }
+    .ipm-shell {
+        background: white;
+        max-width: 960px; margin: 0 auto;
+        border-radius: 14px; padding: 44px 48px;
+        box-shadow: 0 24px 80px rgba(0,0,0,0.35);
+    }
+    /* Floating close × */
+    .ipm-fab-close {
+        position: fixed; top: 18px; right: 18px; z-index: 10000;
+        background: white; border: 1.5px solid #e2e8f0;
+        width: 42px; height: 42px; border-radius: 50%;
+        font-size: 0.95rem; cursor: pointer;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+        display: flex; align-items: center; justify-content: center;
+        color: #64748b; transition: 0.18s;
+    }
+    .ipm-fab-close:hover { color: #162135; border-color: #cbd5e1; background: #f8fafc; }
+    /* Floating print button */
+    .ipm-fab-print {
+        position: fixed; bottom: 28px; right: 28px; z-index: 10000;
+        background: #705194; color: white; border: none;
+        padding: 13px 22px; border-radius: 50px;
+        font-size: 0.82rem; font-weight: 700; cursor: pointer;
+        box-shadow: 0 6px 24px rgba(112,81,148,0.45);
+        display: flex; align-items: center; gap: 8px;
+        transition: 0.18s; letter-spacing: 0.2px;
+    }
+    .ipm-fab-print:hover { background: #5a3d7a; transform: translateY(-2px); }
 </style>
 
+<!-- ═══ PRINT PREVIEW MODAL ═══ -->
+<div id="invPrintModal">
+    <button class="ipm-fab-close no-print" onclick="closeInvPreview()" title="Close preview">
+        <i class="fas fa-times"></i>
+    </button>
+    <button class="ipm-fab-print no-print" onclick="confirmInvPrint()">
+        <i class="fas fa-print"></i> Print Now
+    </button>
+    <div class="ipm-shell">
+        <div id="invPreviewContent"></div>
+    </div>
+</div>
+
 <div class="inventory-container">
+
+    <!-- PRINT-ONLY HEADER (hidden on screen, shown when printing) -->
+    <div class="print-doc-header" id="printDocHeader">
+        <div class="pdh-top">
+            <div class="pdh-brand">
+                <h1>F.L.E.X VAPE SHOP</h1>
+                <p>Inventory Management System &bull; Stock Level Report</p>
+            </div>
+            <div class="pdh-meta">
+                <div class="pdh-report-type">Inventory Report</div>
+                <div class="pdh-date" id="pdh-date-stamp"></div>
+            </div>
+        </div>
+        <div class="pdh-summary" id="pdh-summary-bar"></div>
+    </div>
+    <div class="print-doc-footer" style="display:none;" id="printDocFooter">
+        <span>F.L.E.X Inventory Management System &bull; Confidential</span>
+        <span id="pdh-footer-ts"></span>
+    </div>
     
     <!-- HEADER -->
     <div class="header-flex">
         <div class="header-title">
             <h1>Inventory</h1>
         </div>
-        <div class="cat-filters">
-            <button class="cat-pill active" onclick="filterByCategory('all', this)"><i class="fas fa-border-all"></i> All</button>
-            {% set categories = [] %}
-            {% for key, p in products.items() %}
-                {% if p.type and p.type not in categories %}
-                    {% set _ = categories.append(p.type) %}
-                {% endif %}
-            {% endfor %}
-            {% for cat in categories|sort %}
-            <button class="cat-pill" onclick="filterByCategory('{{ cat|lower }}', this)">{{ cat }}</button>
-            {% endfor %}
+        <div class="header-right">
+            <button class="print-btn no-print" onclick="directInvPrint()">
+                <i class="fas fa-print"></i> Print
+            </button>
+            <div class="cat-filters">
+                <button class="cat-pill active" onclick="filterByCategory('all', this)"><i class="fas fa-border-all"></i> All</button>
+                {% set categories = [] %}
+                {% for key, p in products.items() %}
+                    {% if p.type and p.type not in categories %}
+                        {% set _ = categories.append(p.type) %}
+                    {% endif %}
+                {% endfor %}
+                {% for cat in categories|sort %}
+                <button class="cat-pill" onclick="filterByCategory('{{ cat|lower }}', this)">{{ cat }}</button>
+                {% endfor %}
+            </div>
         </div>
     </div>
 
@@ -1825,6 +2387,293 @@ TEMPLATES["inventory.html"] = """
         const tbody = document.querySelector("#invTable tbody");
         const rows = Array.from(tbody.querySelectorAll("tr"));
         rows.forEach((row, i) => row.dataset.origIndex = i);
+    });
+
+    /* ══════════════════════════════════════════════════════
+       PRINT PREVIEW SYSTEM
+    ══════════════════════════════════════════════════════ */
+    function _getInvStats() {
+        const rows = Array.from(document.querySelectorAll('#invTable tbody tr'));
+        const visible = rows.filter(r => r.style.display !== 'none');
+        let totalSkus = visible.length, totalUnits = 0, outCount = 0, lowCount = 0, totalValue = 0;
+        visible.forEach(row => {
+            const tds = row.querySelectorAll('td');
+            if (tds.length < 9) return;
+            const qtyText  = tds[9]  ? tds[9].textContent.replace(/[^0-9]/g,'') : '0';
+            const priceText= tds[8]  ? tds[8].textContent.replace(/[₱,]/g,'').trim() : '0';
+            const qty   = parseInt(qtyText) || 0;
+            const price = parseFloat(priceText) || 0;
+            totalUnits += qty;
+            totalValue += qty * price;
+            if (qty <= 0)      outCount++;
+            else if (qty < 5)  lowCount++;
+        });
+        return { totalSkus, totalUnits, outCount, lowCount, totalValue };
+    }
+
+    function directInvPrint() {
+        const now = new Date();
+        const dateStr = now.toLocaleString('en-PH', { year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit' });
+        const stats = _getInvStats();
+
+        document.getElementById('pdh-date-stamp').textContent = 'Generated: ' + dateStr;
+        document.getElementById('pdh-footer-ts').textContent  = 'Generated: ' + dateStr + '  |  Page 1';
+        document.getElementById('pdh-summary-bar').innerHTML =
+            _statChip('Total SKUs',   stats.totalSkus,   '') +
+            _statChip('Total Units',  stats.totalUnits,  '') +
+            _statChip('Out of Stock', stats.outCount,    stats.outCount > 0 ? 'c-red' : 'c-green') +
+            _statChip('Low Stock',    stats.lowCount,    stats.lowCount > 0 ? 'c-red' : 'c-green') +
+            _statChip('Inventory Value', '₱'+stats.totalValue.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}), 'c-purple');
+
+        const visibleRows = Array.from(document.querySelectorAll('#invTable tbody tr'))
+            .filter(r => r.style.display !== 'none');
+
+        let tableRows = '';
+        visibleRows.forEach((row, i) => {
+            const tds = row.querySelectorAll('td');
+            if (tds.length < 10) return;
+            const code    = tds[1]  ? tds[1].textContent.trim()  : '\u2014';
+            const name    = tds[2]  ? tds[2].textContent.trim()  : '\u2014';
+            const flavor  = tds[3]  ? tds[3].textContent.trim()  : '\u2014';
+            const cat     = tds[4]  ? tds[4].textContent.trim()  : '\u2014';
+            const ver     = tds[5]  ? tds[5].textContent.trim()  : '\u2014';
+            const mg      = tds[6]  ? tds[6].textContent.trim()  : '\u2014';
+            const cost    = tds[7]  ? tds[7].textContent.trim()  : '\u2014';
+            const price   = tds[8]  ? tds[8].textContent.trim()  : '\u2014';
+            const qtyNum  = parseInt((tds[9] ? tds[9].textContent : '0').replace(/[^0-9]/g,'')) || 0;
+
+            let qtyCell, rowBg='';
+            if (qtyNum <= 0)     { qtyCell='<span style="background:#f3f4f6;color:#4b5563;padding:3px 10px;border-radius:50px;font-size:0.68rem;font-weight:800;">OUT</span>'; rowBg='#fff5f5'; }
+            else if (qtyNum < 5) { qtyCell='<span style="background:#fee2e2;color:#991b1b;padding:3px 10px;border-radius:50px;font-size:0.68rem;font-weight:800;">'+qtyNum+' PCS ⚠</span>'; rowBg='#fffaf0'; }
+            else                 { qtyCell='<span style="background:#d1fae5;color:#065f46;padding:3px 10px;border-radius:50px;font-size:0.68rem;font-weight:800;">'+qtyNum+' PCS</span>'; }
+
+            tableRows += `<tr style="background:${rowBg||( i%2===0 ? '#fff':'#f8f9ff' )};">
+                <td style="color:#94a3b8;font-weight:700;font-size:0.65rem;text-align:center;">${i+1}</td>
+                <td><span style="background:#ede9f8;color:#705194;padding:2px 7px;border-radius:5px;font-size:0.68rem;font-weight:800;font-family:monospace;">${code||'\u2014'}</span></td>
+                <td style="font-weight:700;font-size:0.78rem;">${name}</td>
+                <td style="color:#705194;font-weight:600;font-size:0.75rem;">${flavor||'\u2014'}</td>
+                <td><span style="background:#e0e7ff;color:#4338ca;padding:2px 8px;border-radius:50px;font-size:0.62rem;font-weight:800;text-transform:uppercase;">${cat}</span></td>
+                <td style="font-size:0.72rem;color:#64748b;">${ver||'\u2014'}</td>
+                <td style="font-size:0.72rem;color:#64748b;">${mg||'\u2014'}</td>
+                <td style="font-size:0.72rem;color:#64748b;">${cost}</td>
+                <td style="font-weight:700;color:#162135;">${price}</td>
+                <td>${qtyCell}</td>
+            </tr>`;
+        });
+
+        const content = `
+            <div style="padding:0;font-family:'Inter','Outfit',sans-serif;color:#162135;">
+                <div style="border-bottom:3px solid #162135;padding-bottom:16px;margin-bottom:18px;">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+                        <div>
+                            <div style="font-size:1.45rem;font-weight:900;letter-spacing:1.5px;color:#162135;margin:0 0 3px;">F.L.E.X VAPE SHOP</div>
+                            <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:1px;color:#64748b;">Inventory Management System &bull; Stock Level Report</div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-size:0.9rem;font-weight:800;color:#705194;text-transform:uppercase;letter-spacing:0.5px;">Inventory Report</div>
+                            <div style="font-size:0.65rem;color:#94a3b8;margin-top:3px;">Generated: ${dateStr}</div>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:0;margin-top:14px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+                        ${_previewStatChip('Total SKUs',   stats.totalSkus,   '#162135')}
+                        ${_previewStatChip('Total Units',  stats.totalUnits,  '#162135')}
+                        ${_previewStatChip('Out of Stock', stats.outCount,    stats.outCount > 0 ? '#ef4444':'#10b981')}
+                        ${_previewStatChip('Low Stock',    stats.lowCount,    stats.lowCount > 0 ? '#ef4444':'#10b981')}
+                        ${_previewStatChip('Inventory Value', '₱'+stats.totalValue.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}), '#705194', true)}
+                    </div>
+                </div>
+                <table style="width:100%;border-collapse:collapse;font-size:0.72rem;">
+                    <thead>
+                        <tr style="background:#162135;">
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;text-align:center;letter-spacing:.5px;">#</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Code</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Product Name</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Flavor</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Category</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Version</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">ML/MG</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Cost</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Price</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;text-align:center;">Stock</th>
+                        </tr>
+                    </thead>
+                    <tbody>${tableRows}</tbody>
+                </table>
+                <div style="margin-top:18px;padding-top:10px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;font-size:0.58rem;color:#94a3b8;">
+                    <span>F.L.E.X Inventory Management System &bull; Confidential</span>
+                    <span>Generated: ${dateStr}</span>
+                </div>
+            </div>`;
+
+        const printWin = window.open('', '_blank', 'width=1000,height=750');
+        printWin.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>F.L.E.X Inventory Report</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:'Inter','Outfit',sans-serif; color:#162135; background:white; padding:18mm 14mm 16mm; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    @page { size:A4 landscape; margin:18mm 14mm 16mm; }
+    @media print { body { padding:0; } }
+  </style>
+</head>
+<body>${content}</body>
+</html>`);
+        printWin.document.close();
+        printWin.focus();
+        setTimeout(() => { printWin.print(); printWin.close(); }, 600);
+    }
+
+    function openInvPreview() {
+        const now = new Date();
+        const dateStr = now.toLocaleString('en-PH', { year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit' });
+        const stats = _getInvStats();
+
+        // ── Populate the real print header (used in actual print) ──
+        document.getElementById('pdh-date-stamp').textContent = 'Generated: ' + dateStr;
+        document.getElementById('pdh-footer-ts').textContent  = 'Generated: ' + dateStr + '  |  Page 1';
+        document.getElementById('pdh-summary-bar').innerHTML =
+            _statChip('Total SKUs',   stats.totalSkus,   '') +
+            _statChip('Total Units',  stats.totalUnits,  '') +
+            _statChip('Out of Stock', stats.outCount,    stats.outCount > 0 ? 'c-red' : 'c-green') +
+            _statChip('Low Stock',    stats.lowCount,    stats.lowCount > 0 ? 'c-red' : 'c-green') +
+            _statChip('Inventory Value', '₱'+stats.totalValue.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}), 'c-purple');
+
+        // ── Build preview HTML ──
+        const visibleRows = Array.from(document.querySelectorAll('#invTable tbody tr'))
+            .filter(r => r.style.display !== 'none');
+
+        let tableRows = '';
+        visibleRows.forEach((row, i) => {
+            const tds = row.querySelectorAll('td');
+            if (tds.length < 10) return;
+            const code    = tds[1]  ? tds[1].textContent.trim()  : '—';
+            const name    = tds[2]  ? tds[2].textContent.trim()  : '—';
+            const flavor  = tds[3]  ? tds[3].textContent.trim()  : '—';
+            const cat     = tds[4]  ? tds[4].textContent.trim()  : '—';
+            const ver     = tds[5]  ? tds[5].textContent.trim()  : '—';
+            const mg      = tds[6]  ? tds[6].textContent.trim()  : '—';
+            const cost    = tds[7]  ? tds[7].textContent.trim()  : '—';
+            const price   = tds[8]  ? tds[8].textContent.trim()  : '—';
+            const qtyEl   = tds[9]  ? tds[9].innerHTML : '';
+            const qtyNum  = parseInt((tds[9] ? tds[9].textContent : '0').replace(/[^0-9]/g,'')) || 0;
+
+            let qtyCell, rowBg='';
+            if (qtyNum <= 0)     { qtyCell='<span style="background:#f3f4f6;color:#4b5563;padding:3px 10px;border-radius:50px;font-size:0.68rem;font-weight:800;">OUT</span>'; rowBg='#fff5f5'; }
+            else if (qtyNum < 5) { qtyCell='<span style="background:#fee2e2;color:#991b1b;padding:3px 10px;border-radius:50px;font-size:0.68rem;font-weight:800;">'+qtyNum+' PCS ⚠</span>'; rowBg='#fffaf0'; }
+            else                 { qtyCell='<span style="background:#d1fae5;color:#065f46;padding:3px 10px;border-radius:50px;font-size:0.68rem;font-weight:800;">'+qtyNum+' PCS</span>'; }
+
+            tableRows += `<tr style="background:${rowBg||( i%2===0 ? '#fff':'#f8f9ff' )};">
+                <td style="color:#94a3b8;font-weight:700;font-size:0.65rem;text-align:center;">${i+1}</td>
+                <td><span style="background:#ede9f8;color:#705194;padding:2px 7px;border-radius:5px;font-size:0.68rem;font-weight:800;font-family:monospace;">${code||'—'}</span></td>
+                <td style="font-weight:700;font-size:0.78rem;">${name}</td>
+                <td style="color:#705194;font-weight:600;font-size:0.75rem;">${flavor||'—'}</td>
+                <td><span style="background:#e0e7ff;color:#4338ca;padding:2px 8px;border-radius:50px;font-size:0.62rem;font-weight:800;text-transform:uppercase;">${cat}</span></td>
+                <td style="font-size:0.72rem;color:#64748b;">${ver||'—'}</td>
+                <td style="font-size:0.72rem;color:#64748b;">${mg||'—'}</td>
+                <td style="font-size:0.72rem;color:#64748b;">${cost}</td>
+                <td style="font-weight:700;color:#162135;">${price}</td>
+                <td>${qtyCell}</td>
+            </tr>`;
+        });
+
+        const previewHTML = `
+            <div style="padding:0;font-family:'Inter','Outfit',sans-serif;color:#162135;">
+                <!-- HEADER -->
+                <div style="border-bottom:3px solid #162135;padding-bottom:16px;margin-bottom:18px;">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+                        <div>
+                            <div style="font-size:1.45rem;font-weight:900;letter-spacing:1.5px;color:#162135;margin:0 0 3px;">F.L.E.X VAPE SHOP</div>
+                            <div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:1px;color:#64748b;">Inventory Management System &bull; Stock Level Report</div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-size:0.9rem;font-weight:800;color:#705194;text-transform:uppercase;letter-spacing:0.5px;">Inventory Report</div>
+                            <div style="font-size:0.65rem;color:#94a3b8;margin-top:3px;">Generated: ${dateStr}</div>
+                        </div>
+                    </div>
+                    <!-- SUMMARY BAR -->
+                    <div style="display:flex;gap:0;margin-top:14px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+                        ${_previewStatChip('Total SKUs',   stats.totalSkus,   '#162135')}
+                        ${_previewStatChip('Total Units',  stats.totalUnits,  '#162135')}
+                        ${_previewStatChip('Out of Stock', stats.outCount,    stats.outCount > 0 ? '#ef4444':'#10b981')}
+                        ${_previewStatChip('Low Stock',    stats.lowCount,    stats.lowCount > 0 ? '#ef4444':'#10b981')}
+                        ${_previewStatChip('Inventory Value', '₱'+stats.totalValue.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}), '#705194', true)}
+                    </div>
+                </div>
+                <!-- TABLE -->
+                <table style="width:100%;border-collapse:collapse;font-size:0.72rem;">
+                    <thead>
+                        <tr style="background:#162135;">
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;text-align:center;letter-spacing:.5px;">#</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Code</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Product Name</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Flavor</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Category</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Version</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">ML/MG</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Cost</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;">Price</th>
+                            <th style="padding:8px 9px;color:white;font-size:0.58rem;text-transform:uppercase;letter-spacing:.5px;text-align:center;">Stock</th>
+                        </tr>
+                    </thead>
+                    <tbody>${tableRows}</tbody>
+                </table>
+                <!-- FOOTER -->
+                <div style="margin-top:18px;padding-top:10px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;font-size:0.58rem;color:#94a3b8;">
+                    <span>F.L.E.X Inventory Management System &bull; Confidential</span>
+                    <span>Generated: ${dateStr}</span>
+                </div>
+            </div>`;
+
+        document.getElementById('invPreviewContent').innerHTML = previewHTML;
+        document.getElementById('invPrintModal').classList.add('open');
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeInvPreview() {
+        document.getElementById('invPrintModal').classList.remove('open');
+        document.body.style.overflow = '';
+    }
+
+    function confirmInvPrint() {
+        const content = document.getElementById('invPreviewContent').innerHTML;
+        const printWin = window.open('', '_blank', 'width=1000,height=750');
+        printWin.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>F.L.E.X Inventory Report</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:'Inter','Outfit',sans-serif; color:#162135; background:white; padding:18mm 14mm 16mm; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    @page { size:A4 landscape; margin:18mm 14mm 16mm; }
+    @media print { body { padding:0; } }
+  </style>
+</head>
+<body>${content}</body>
+</html>`);
+        printWin.document.close();
+        printWin.focus();
+        setTimeout(() => { printWin.print(); printWin.close(); }, 600);
+        closeInvPreview();
+    }
+
+    function _statChip(label, value, colorClass) {
+        return `<div class="pdh-stat"><div class="pdh-stat-label">${label}</div><div class="pdh-stat-value ${colorClass}">${value}</div></div>`;
+    }
+    function _previewStatChip(label, value, color, noBorder) {
+        return `<div style="flex:1;padding:10px 14px;border-right:${noBorder?'none':'1px solid #e2e8f0'};text-align:center;">
+            <div style="font-size:0.55rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;">${label}</div>
+            <div style="font-size:1.05rem;font-weight:900;color:${color};margin-top:2px;">${value}</div>
+        </div>`;
+    }
+
+    // Close modal on backdrop click
+    document.getElementById('invPrintModal').addEventListener('click', function(e) {
+        if (e.target === this) closeInvPreview();
     });
 </script>
 {% endblock %}
@@ -2575,283 +3424,831 @@ TEMPLATES["reports.html"] = """
 
 <style>
     :root {
-        --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
-        --orange:#f59e0b; --blue:#3b82f6;
+        --brand:#705194; --brand-light:#f3eeff;
+        --green:#10b981; --green-lt:#d1fae5;
+        --red:#ef4444;   --red-lt:#fee2e2;
+        --orange:#f59e0b;--orange-lt:#fef3c7;
+        --blue:#3b82f6;  --blue-lt:#dbeafe;
         --grad:linear-gradient(135deg,#705194,#9b6fc4);
-        --bg:#f8f7ff;
-        --border:#e8e4f0; --text:#1e293b; --muted:#64748b;
+        --bg:#f8f7ff; --border:#e8e4f0; --text:#1e293b; --muted:#64748b;
         --radius:16px; --radius-sm:10px;
-        --shadow:0 2px 10px rgba(112,81,148,.05);
-        /* legacy aliases */
-        --brand-navy: #162135;
-        --brand-purple: #705194;
-        --brand-green: #10b981;
-        --brand-red: #ef4444;
-        --soft-bg: #f8f7ff;
-        --border-light: #e8e4f0;
+        --shadow:0 2px 12px rgba(112,81,148,.08);
+        --brand-navy:#162135; --brand-purple:#705194;
+        --brand-green:#10b981; --brand-red:#ef4444;
+        --soft-bg:#f8f7ff; --border-light:#e8e4f0;
     }
 
-    /* --- PAGE UI WRAPPER --- */
-    .report-ui-wrapper { max-width: 900px; margin: 0 auto; padding: 10px; }
+    /* ===== PAGE WRAPPER ===== */
+    .report-ui-wrapper { max-width: 1050px; margin: 0 auto; padding: 10px; }
 
-    /* --- RESPONSIVE CONTROLS --- */
+    /* ===== CONTROL BAR ===== */
     .report-controls {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        background: white;
-        padding: 12px;
-        border-radius: var(--radius);
-        margin-bottom: 20px;
-        border: 1.5px solid var(--border);
-        box-shadow: var(--shadow);
-        flex-wrap: wrap; 
-        gap: 12px;
+        display: flex; justify-content: space-between; align-items: center;
+        background: white; padding: 12px 16px;
+        border-radius: var(--radius); margin-bottom: 20px;
+        border: 1.5px solid var(--border); box-shadow: var(--shadow);
+        flex-wrap: wrap; gap: 12px;
     }
+    .period-selector {
+        display: flex; background: #f1f5f9; padding: 4px;
+        border-radius: 10px; gap: 2px;
+    }
+    .period-btn {
+        text-decoration: none; padding: 8px 16px;
+        border-radius: 8px; font-size: 0.78rem; font-weight: 600;
+        color: #64748b; transition: all .2s; white-space: nowrap;
+    }
+    .period-btn.active {
+        background: white; color: var(--brand); font-weight: 800;
+        box-shadow: 0 2px 8px rgba(112,81,148,.15);
+    }
+    .btn-group { display: flex; gap: 8px; align-items: center; }
+    .btn-action {
+        border: none; padding: 9px 14px; border-radius: 9px;
+        font-weight: 700; cursor: pointer; display: flex; align-items: center;
+        gap: 6px; font-size: 0.78rem; color: white; transition: filter .2s;
+        white-space: nowrap;
+    }
+    .btn-action:hover { filter: brightness(1.12); }
+    .btn-pdf  { background: #475569; }
+    .btn-img  { background: var(--brand); }
+    .btn-csv  { background: #059669; }
 
-    .period-selector { 
-        display: flex; 
-        background: #f1f5f9; 
-        padding: 4px; 
-        border-radius: 8px; 
-        flex: 1; 
-        min-width: 200px; 
-    }
-    .period-btn { 
-        text-decoration: none; 
-        padding: 8px 12px; 
-        flex: 1; 
-        text-align: center; 
-        border-radius: 6px; 
-        font-size: 0.8rem; 
-        font-weight: 600; 
-        color: #64748b; 
-        transition: 0.2s; 
-    }
-    .period-btn.active { background: white; color: var(--brand); box-shadow: 0 2px 10px rgba(112,81,148,.1); font-weight:700; }
-
-    .btn-group { 
-        display: flex; 
-        gap: 8px; 
-        flex: 1; 
-        justify-content: flex-end; 
-        min-width: 200px; 
-    }
-    .btn-action { 
-        flex: 1; 
-        border: none; 
-        padding: 10px; 
-        border-radius: 8px; 
-        font-weight: 700; 
-        cursor: pointer; 
-        display: flex; 
-        align-items: center; 
-        justify-content: center; 
-        gap: 6px; 
-        font-size: 0.8rem; 
-        color: white; 
-    }
-    .btn-pdf { background: #475569; }
-    .btn-img { background: var(--brand-purple); }
-
-    /* --- THE OFFICIAL REPORT DOCUMENT --- */
+    /* ===== REPORT DOCUMENT ===== */
     #report-capture-area {
-        background: white;
-        width: 100%;
-        margin: 0 auto;
-        padding: 5vw; /* Fluid padding based on screen width */
-        color: var(--brand-navy);
-        font-family: 'Inter', sans-serif;
-        border: 1px solid var(--border-light);
-        position: relative;
+        background: white; width: 100%; margin: 0 auto;
+        padding: 36px 40px; color: var(--brand-navy);
+        font-family: 'Inter', 'Outfit', sans-serif;
+        border: 1.5px solid var(--border-light);
+        border-radius: 18px;
+        box-shadow: 0 4px 24px rgba(112,81,148,.07);
         box-sizing: border-box;
     }
 
-    /* CENTERED LOGO HEADER */
+    /* ===== DOCUMENT HEADER ===== */
     .doc-header {
-        text-align: center;
+        display: flex; justify-content: space-between; align-items: flex-start;
         border-bottom: 2px solid var(--brand-navy);
-        padding-bottom: 20px;
-        margin-bottom: 30px;
+        padding-bottom: 22px; margin-bottom: 28px; flex-wrap: wrap; gap: 12px;
+    }
+    .brand-block {}
+    .brand-info h2 { margin:0; font-size:1.5rem; font-weight:900; letter-spacing:.5px; }
+    .brand-info p  { margin:4px 0 0; font-size:0.72rem; color:#64748b; text-transform:uppercase; letter-spacing:.5px; }
+    .report-meta { text-align:right; }
+    .report-type-label {
+        font-size:0.78rem; font-weight:800; color:var(--brand-purple);
+        text-transform:uppercase; letter-spacing:.8px;
+    }
+    .report-date   { font-size:0.72rem; color:#94a3b8; margin-top:4px; }
+    .report-period-badge {
+        display:inline-flex; align-items:center; gap:6px;
+        background:var(--brand-light); color:var(--brand-purple);
+        border:1px solid #d4b8f0; padding:4px 12px; border-radius:50px;
+        font-size:0.68rem; font-weight:800; margin-top:8px;
+        text-transform:uppercase; letter-spacing:.4px;
     }
 
-    .brand-info h2 { margin: 0; font-size: clamp(1.1rem, 4vw, 1.6rem); font-weight: 800; letter-spacing: 1px; }
-    .brand-info p { margin: 5px 0 0; font-size: clamp(0.7rem, 2vw, 0.85rem); color: #64748b; text-transform: uppercase; }
-    .report-type-label { margin-top: 15px; font-size: clamp(0.9rem, 3vw, 1.1rem); font-weight: 700; color: var(--brand-purple); text-transform: uppercase; }
-    .report-date { font-size: 0.8rem; color: #94a3b8; margin-top: 5px; }
-
-    /* Highlights Section */
-    .report-grid { 
-        display: grid; 
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); 
-        gap: 15px; 
-        margin-bottom: 30px; 
+    /* ===== KPI STAT CARDS ===== */
+    .report-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 14px; margin-bottom: 32px;
     }
-    .stat-card { background: var(--soft-bg); padding: 15px; border-radius: 12px; border: 1px solid var(--border-light); text-align: center;}
-    .stat-card label { display: block; font-size: 0.6rem; font-weight: 800; color: #94a3b8; text-transform: uppercase; margin-bottom: 5px; }
-    .stat-card .value { font-size: clamp(1.1rem, 4vw, 1.6rem); font-weight: 800; }
-    .stat-card .value.green { color: var(--brand-green); }
+    .stat-card {
+        background: var(--soft-bg); padding: 16px 18px;
+        border-radius: 14px; border: 1.5px solid var(--border-light);
+        position: relative; overflow: hidden;
+    }
+    .stat-card::before {
+        content:''; position:absolute; top:0; left:0; right:0; height:3px;
+        background: var(--card-accent, var(--brand));
+    }
+    .stat-card label {
+        display:block; font-size:0.58rem; font-weight:800; color:#94a3b8;
+        text-transform:uppercase; letter-spacing:.6px; margin-bottom:6px;
+    }
+    .stat-card .value { font-size:1.45rem; font-weight:900; line-height:1.1; }
+    .stat-card .value.green  { color:var(--brand-green); }
+    .stat-card .value.purple { color:var(--brand-purple); }
+    .stat-card .value.orange { color:var(--orange); }
+    .stat-card .value.red    { color:var(--brand-red); }
+    .stat-card .value.blue   { color:var(--blue); }
+    .stat-card .sub { font-size:0.65rem; color:var(--muted); margin-top:4px; }
 
-    /* Movement Table */
+    /* ===== SECTION HEADINGS ===== */
+    .section-heading {
+        font-size:0.7rem; font-weight:900; text-transform:uppercase; letter-spacing:.7px;
+        color:#475569; display:flex; align-items:center; gap:10px;
+        margin-bottom:14px; margin-top:28px;
+    }
+    .section-heading:first-of-type { margin-top: 0; }
+    .section-heading::after { content:''; flex:1; height:1px; background:var(--border-light); }
+    .section-heading i { color:var(--brand); font-size:0.8rem; }
+
+    /* ===== STOCK MOVEMENT TABLE ===== */
     .table-responsive {
-        width: 100%;
-        overflow-x: auto; 
-        -webkit-overflow-scrolling: touch;
-        margin-bottom: 25px;
-        border-radius: 8px;
+        width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch;
+        border-radius:10px; border:1px solid var(--border-light);
+        margin-bottom: 6px;
     }
-    
-    /* Swipe Hint for Mobile */
-    .swipe-hint { display: none; font-size: 0.65rem; color: #94a3b8; margin-bottom: 5px; text-align: right; font-style: italic; }
+    .report-table {
+        width:100%; border-collapse:collapse; min-width:560px;
+    }
+    .report-table thead tr { background: #f8fafc; }
+    .report-table th {
+        text-align:left; padding:11px 14px; font-size:0.62rem;
+        font-weight:800; color:#64748b; text-transform:uppercase;
+        letter-spacing:.5px; border-bottom:2px solid var(--border-light);
+        white-space:nowrap;
+    }
+    .report-table td {
+        padding:11px 14px; font-size:0.8rem;
+        border-bottom:1px solid #f1f5f9; vertical-align:middle;
+    }
+    .report-table tbody tr:last-child td { border-bottom: none; }
+    .report-table tbody tr:hover { background: #fafbff; }
+    .report-table tbody tr.row-positive td { background: rgba(16,185,129,.04); }
+    .report-table tbody tr.row-negative td { background: rgba(239,68,68,.04); }
+    .report-table tbody tr.row-neutral  td { background: rgba(100,116,139,.03); }
 
-    .report-table { width: 100%; border-collapse: collapse; min-width: 500px; }
-    .report-table th { background: #f1f5f9; text-align: left; padding: 10px; font-size: 0.7rem; color: #475569; border: 1px solid var(--border-light); }
-    .report-table td { padding: 10px; font-size: 0.8rem; border: 1px solid var(--border-light); }
+    /* net change badge */
+    .net-badge {
+        display:inline-flex; align-items:center; gap:3px;
+        padding:3px 9px; border-radius:50px; font-size:0.68rem; font-weight:800;
+    }
+    .net-pos { background:var(--green-lt); color:#065f46; }
+    .net-neg { background:var(--red-lt);   color:#991b1b; }
+    .net-zero{ background:#f1f5f9;         color:#64748b; }
 
-    /* Alerts */
-    .section-heading { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; margin-bottom: 12px; color: #475569; display: flex; align-items: center; gap: 8px;}
-    .section-heading::after { content: ""; flex: 1; height: 1px; background: var(--border-light); }
-    .warning-box { background: #fff1f2; border: 1px solid #ffe4e6; border-radius: 12px; padding: 12px; }
-    .warning-item { font-size: 0.75rem; font-weight: 600; color: #991b1b; display: flex; justify-content: space-between; padding: 4px 0; }
-
-    .doc-footer { margin-top: 30px; padding-top: 15px; border-top: 1px solid var(--border-light); display: flex; justify-content: space-between; font-size: 0.6rem; color: #94a3b8; flex-wrap: wrap; gap: 8px; }
-
-    /* --- MOBILE BREAKPOINT --- */
-    @media (max-width: 600px) {
-        .report-ui-wrapper { padding: 5px; }
-        .report-controls { padding: 10px; border-radius: 0; margin-left: -5px; margin-right: -5px; }
-        .swipe-hint { display: block; }
-        #report-capture-area { padding: 20px 15px; border-left: none; border-right: none; }
-        .btn-group { min-width: 100%; }
-        .period-selector { min-width: 100%; }
+    /* category badge in movement table */
+    .cat-chip-sm {
+        background:#e0e7ff; color:#4338ca;
+        padding:2px 8px; border-radius:50px;
+        font-size:0.58rem; font-weight:800; text-transform:uppercase;
     }
 
-    /* --- PRINT FIXES --- */
+    /* revenue cell */
+    .rev-cell { font-weight:700; color:var(--brand-green); font-size:0.78rem; }
+
+    /* ===== TOP SELLERS ===== */
+    .sellers-grid {
+        display:grid; gap:10px; margin-bottom:6px;
+    }
+    .seller-row {
+        display:flex; align-items:center; gap:12px;
+        background:var(--soft-bg); padding:10px 14px;
+        border-radius:10px; border:1px solid var(--border-light);
+    }
+    .seller-rank {
+        width:24px; height:24px; border-radius:50%; background:var(--grad);
+        color:white; font-size:0.65rem; font-weight:900;
+        display:flex; align-items:center; justify-content:center; flex-shrink:0;
+    }
+    .seller-name { flex:1; font-weight:700; font-size:0.8rem; }
+    .seller-flavor { font-size:0.72rem; color:var(--muted); }
+    .seller-bar-wrap { width:100px; background:#e2e8f0; border-radius:50px; height:6px; overflow:hidden; flex-shrink:0; }
+    .seller-bar { height:100%; background:var(--grad); border-radius:50px; }
+    .seller-qty { font-size:0.72rem; font-weight:800; color:var(--brand); min-width:36px; text-align:right; }
+
+    /* ===== CATEGORY PERFORMANCE ===== */
+    .cat-perf-grid {
+        display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px;
+        margin-bottom:6px;
+    }
+    .cat-perf-card {
+        background:var(--soft-bg); border:1.5px solid var(--border-light);
+        border-radius:12px; padding:14px; text-align:center;
+    }
+    .cat-perf-name {
+        font-size:0.62rem; font-weight:900; text-transform:uppercase;
+        letter-spacing:.5px; color:var(--brand-purple); margin-bottom:8px;
+    }
+    .cat-perf-rev  { font-size:1.1rem; font-weight:900; color:var(--brand-green); }
+    .cat-perf-sold { font-size:0.7rem; color:var(--muted); margin-top:3px; }
+
+    /* ===== CRITICAL STOCK WARNINGS ===== */
+    .warn-table-wrap {
+        border-radius:12px; overflow:hidden;
+        border:1.5px solid #ffe4e6; margin-bottom:6px;
+    }
+    .warn-table {
+        width:100%; border-collapse:collapse; min-width:420px;
+    }
+    .warn-table thead tr { background:#fff1f2; }
+    .warn-table th {
+        padding:10px 14px; font-size:0.6rem; font-weight:900;
+        text-transform:uppercase; letter-spacing:.5px; color:#991b1b;
+        border-bottom:1px solid #ffe4e6; text-align:left;
+    }
+    .warn-table td {
+        padding:10px 14px; font-size:0.78rem;
+        border-bottom:1px solid #fff5f5; vertical-align:middle;
+    }
+    .warn-table tbody tr:last-child td { border-bottom:none; }
+    .warn-table tbody tr:hover { background:#fff8f8; }
+
+    .sev-badge {
+        display:inline-flex; align-items:center; gap:4px;
+        padding:3px 10px; border-radius:50px; font-size:0.62rem; font-weight:900;
+        white-space:nowrap;
+    }
+    .sev-out      { background:#fee2e2; color:#7f1d1d; }
+    .sev-critical { background:#ffedd5; color:#7c2d12; }
+    .sev-low      { background:#fef9c3; color:#713f12; }
+
+    .stock-num {
+        font-size:1rem; font-weight:900;
+        font-variant-numeric:tabular-nums;
+    }
+    .stock-num.out      { color:#b91c1c; }
+    .stock-num.critical { color:#c2410c; }
+    .stock-num.low      { color:#a16207; }
+
+    .no-warn-msg {
+        background:#f0fdf4; border:1px solid #bbf7d0; border-radius:12px;
+        padding:20px; text-align:center; color:#166534;
+        font-size:0.82rem; font-weight:700;
+    }
+    .no-warn-msg i { font-size:1.4rem; display:block; margin-bottom:6px; opacity:.7; }
+
+    /* ===== FOOTER ===== */
+    .doc-footer {
+        margin-top:32px; padding-top:16px; border-top:1px solid var(--border-light);
+        display:flex; justify-content:space-between; align-items:center;
+        font-size:0.6rem; color:#94a3b8; flex-wrap:wrap; gap:8px;
+    }
+    .doc-footer strong { color:var(--brand-navy); }
+
+    /* ===== SWIPE HINT ===== */
+    .swipe-hint { display:none; font-size:0.62rem; color:#94a3b8; margin-bottom:5px; text-align:right; font-style:italic; }
+
+    /* ===== MOBILE ===== */
+    @media (max-width:640px) {
+        .report-ui-wrapper { padding:5px; }
+        .report-controls { padding:10px; border-radius:0; margin:-5px -5px 16px; }
+        .swipe-hint { display:block; }
+        #report-capture-area { padding:20px 14px; border-left:none; border-right:none; border-radius:0; }
+        .btn-group { flex-wrap:wrap; }
+        .doc-header { flex-direction:column; }
+        .report-meta { text-align:left; }
+    }
+
+    /* ===== PAGE SETUP ===== */
+    @page { size: A4 portrait; margin: 12mm 10mm 14mm; }
+
+    /* ===================================================================
+       PRINT LAYOUT — Inventory Audit Report
+       Visual identity: Navy command-strip header · Ledger tables ·
+       Numbered section dividers · Authorization footer
+    =================================================================== */
     @media print {
-        nav, .sidebar, .mobile-header, .mobile-toggle, .no-print, header, .swipe-hint { display: none !important; }
-        body { background: white; margin: 0; padding: 0; }
-        .main-content { margin-left: 0 !important; width: 100% !important; padding: 0 !important; }
-        #report-capture-area { border: none; box-shadow: none; padding: 40px; width: 100%; }
-        .table-responsive { overflow: visible !important; }
+
+        /* ── 0. ISOLATE THE DOCUMENT ── */
+        body * { visibility: hidden !important; }
+        #report-capture-area,
+        #report-capture-area * { visibility: visible !important; }
+
+        /* ── 1. CANVAS: full-page, zero padding (sections manage own spacing) ── */
+        #report-capture-area {
+            position: fixed !important;
+            top: 0 !important; left: 0 !important;
+            width: 100vw !important; height: auto !important;
+            margin: 0 !important;
+            padding: 0 0 24px !important;
+            border: none !important; box-shadow: none !important;
+            border-radius: 0 !important; background: #fff !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+
+        /* ── 2. HEADER: full-bleed navy command strip ── */
+        .doc-header {
+            background: #162135 !important;
+            color: white !important;
+            display: flex !important;
+            justify-content: space-between !important;
+            align-items: flex-start !important;
+            gap: 24px !important;
+            padding: 14px 28px 16px !important;
+            margin: 0 !important;
+            border-bottom: 4px solid #f5c842 !important;
+            flex-wrap: nowrap !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .brand-info h2 {
+            font-size: 1.05rem !important; font-weight: 900 !important;
+            color: #f5c842 !important; letter-spacing: 1px !important;
+            text-transform: uppercase !important; margin: 0 !important;
+        }
+        .brand-info p {
+            font-size: 0.58rem !important; color: #94a3b8 !important;
+            margin: 3px 0 0 !important; text-transform: uppercase !important;
+            letter-spacing: 0.8px !important;
+        }
+        .report-meta { text-align: right !important; }
+        .report-type-label {
+            font-size: 0.62rem !important; font-weight: 900 !important;
+            color: #f5c842 !important; text-transform: uppercase !important;
+            letter-spacing: 1.5px !important;
+        }
+        .report-date { font-size: 0.58rem !important; color: #94a3b8 !important; margin-top: 3px !important; }
+        .report-period-badge {
+            display: inline-block !important;
+            background: rgba(245,200,66,.18) !important;
+            color: #f5c842 !important;
+            border: 1px solid rgba(245,200,66,.5) !important;
+            border-radius: 2px !important;
+            font-size: 0.55rem !important; font-weight: 800 !important;
+            padding: 3px 8px !important; margin-top: 6px !important;
+            letter-spacing: 0.8px !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+
+        /* ── 3. KPI STRIP: borderless row of flat metric cells ── */
+        .report-grid {
+            display: grid !important;
+            grid-template-columns: repeat(4, 1fr) !important;
+            gap: 0 !important;
+            border-bottom: 1.5px solid #162135 !important;
+            margin: 0 !important;
+            border-radius: 0 !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .stat-card {
+            background: #f8fafc !important;
+            border: none !important;
+            border-right: 1px solid #cbd5e1 !important;
+            border-radius: 0 !important;
+            padding: 10px 16px !important;
+            box-shadow: none !important;
+            text-align: center !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .stat-card:last-child { border-right: none !important; }
+        .stat-card::before { display: none !important; }
+        .stat-card label {
+            display: block !important;
+            font-size: 0.5rem !important; color: #64748b !important;
+            font-weight: 800 !important; text-transform: uppercase !important;
+            letter-spacing: 0.6px !important; margin-bottom: 5px !important;
+        }
+        .stat-card label i { display: none !important; }
+        .stat-card .value { font-size: 1.05rem !important; font-weight: 900 !important; line-height: 1.1 !important; }
+        .stat-card .value.green  { color: #059669 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .stat-card .value.purple { color: #5b3a8a !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .stat-card .value.blue   { color: #1d4ed8 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .stat-card .value.red    { color: #b91c1c !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .stat-card .sub { font-size: 0.5rem !important; color: #94a3b8 !important; margin-top: 3px !important; }
+
+        /* ── 4. CONTENT PADDING WRAPPER ── */
+        .section-heading,
+        .table-responsive,
+        .warn-table-wrap,
+        .sellers-grid,
+        .cat-perf-grid,
+        .doc-footer,
+        .no-warn-msg,
+        .swipe-hint,
+        p {
+            padding-left: 28px !important;
+            padding-right: 28px !important;
+        }
+
+        /* ── 5. SECTION HEADINGS: numbered ledger dividers ── */
+        .section-heading {
+            counter-increment: section-counter !important;
+            display: flex !important;
+            align-items: center !important;
+            gap: 8px !important;
+            font-size: 0.58rem !important; font-weight: 900 !important;
+            text-transform: uppercase !important; letter-spacing: 1.2px !important;
+            color: #162135 !important;
+            border-top: 1.5px solid #162135 !important;
+            border-left: none !important;
+            padding: 6px 28px !important;
+            margin: 16px 0 6px !important;
+            background: none !important;
+            page-break-after: avoid !important;
+        }
+        #report-capture-area { counter-reset: section-counter !important; }
+        .section-heading::before {
+            content: "0" counter(section-counter) !important;
+            display: inline-block !important;
+            background: #162135 !important;
+            color: #f5c842 !important;
+            font-size: 0.52rem !important; font-weight: 900 !important;
+            padding: 2px 6px !important;
+            border-radius: 2px !important;
+            letter-spacing: 0 !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .section-heading::after { display: none !important; }
+        .section-heading i { display: none !important; }
+
+        /* ── 6. TABLES: classic ledger with navy header rows ── */
+        .table-responsive {
+            overflow: visible !important;
+            border: 1px solid #94a3b8 !important;
+            border-radius: 0 !important;
+            margin-bottom: 6px !important;
+            padding-left: 0 !important; padding-right: 0 !important;
+        }
+        .warn-table-wrap {
+            overflow: visible !important;
+            border-radius: 0 !important;
+            border-color: #94a3b8 !important;
+            padding-left: 0 !important; padding-right: 0 !important;
+        }
+        .report-table, .warn-table {
+            font-size: 0.62rem !important;
+            min-width: unset !important; width: 100% !important;
+            border-collapse: collapse !important;
+        }
+        .report-table th {
+            background: #162135 !important; color: #ffffff !important;
+            padding: 6px 9px !important; font-size: 0.54rem !important;
+            font-weight: 800 !important; text-transform: uppercase !important;
+            letter-spacing: 0.5px !important; border: none !important;
+            white-space: nowrap !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .report-table td {
+            padding: 5px 9px !important;
+            border-bottom: 1px solid #e2e8f0 !important;
+            border-right: 1px solid #e8edf2 !important;
+            font-size: 0.62rem !important;
+        }
+        .report-table tbody tr:nth-child(even) td {
+            background: #f8fafc !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .report-table tbody tr.row-positive td {
+            background: rgba(16,185,129,.07) !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .report-table tbody tr.row-negative td {
+            background: rgba(239,68,68,.07) !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .warn-table th {
+            background: #1e293b !important; color: white !important;
+            padding: 6px 9px !important; font-size: 0.54rem !important;
+            border: none !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .warn-table td {
+            padding: 5px 9px !important;
+            border-bottom: 1px solid #e2e8f0 !important;
+            font-size: 0.62rem !important;
+        }
+
+        /* ── 7. NET CHANGE & STATUS BADGES ── */
+        .net-badge { border-radius: 2px !important; font-size: 0.52rem !important; padding: 2px 6px !important; }
+        .cat-chip-sm { border-radius: 2px !important; font-size: 0.5rem !important; }
+        .sev-badge   { border-radius: 2px !important; font-size: 0.52rem !important; }
+        .net-pos   { background: #d1fae5 !important; color: #065f46 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .net-neg   { background: #fee2e2 !important; color: #991b1b !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .net-zero  { background: #f1f5f9 !important; color: #64748b !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .cat-chip-sm { background: #e0e7ff !important; color: #3730a3 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .sev-out      { background: #fee2e2 !important; color: #7f1d1d !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .sev-critical { background: #ffedd5 !important; color: #7c2d12 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .sev-low      { background: #fef9c3 !important; color: #713f12 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+        /* ── 8. TOP SELLERS ── */
+        .seller-row {
+            border: 1px solid #e2e8f0 !important;
+            border-radius: 0 !important; padding: 5px 10px !important;
+            background: white !important;
+        }
+        .seller-rank {
+            background: #162135 !important;
+            border-radius: 2px !important;
+            width: 18px !important; height: 18px !important;
+            font-size: 0.52rem !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .seller-name { font-size: 0.65rem !important; }
+        .seller-flavor { font-size: 0.58rem !important; }
+        .seller-qty { font-size: 0.6rem !important; }
+        .rev-cell { font-size: 0.62rem !important; }
+
+        /* ── 9. CATEGORY PERFORMANCE ── */
+        .cat-perf-grid { gap: 5px !important; }
+        .cat-perf-card {
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 0 !important; padding: 8px !important;
+            border-left: 3px solid #705194 !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .cat-perf-name { font-size: 0.52rem !important; }
+        .cat-perf-rev  { font-size: 0.85rem !important; }
+        .cat-perf-sold { font-size: 0.5rem !important; }
+
+        /* ── 10. GROSS PROFIT CARD ── */
+        .gross-profit-print { display: block !important; }
+
+        /* ── 11. FOOTER: navy rule + authorization line ── */
+        .doc-footer {
+            border-top: 2px solid #162135 !important;
+            margin-top: 16px !important; padding-top: 10px !important;
+            display: flex !important; justify-content: space-between !important;
+            font-size: 0.55rem !important; color: #475569 !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .doc-footer::after {
+            content: "Prepared By: ________________________________    Authorized By: ________________________________";
+            display: block !important;
+            width: 100% !important;
+            font-size: 0.58rem !important;
+            color: #475569 !important;
+            margin-top: 14px !important;
+            padding-top: 10px !important;
+            border-top: 1px dashed #cbd5e1 !important;
+        }
+
+        /* ── 12. PAGE BREAKS ── */
+        .report-table thead, .warn-table thead { display: table-header-group !important; }
+        .report-table tbody tr, .warn-table tbody tr { page-break-inside: avoid !important; }
+        .sellers-grid, .cat-perf-grid { page-break-inside: avoid !important; }
+
+        /* ── 13. UTILITIES ── */
+        a { text-decoration: none !important; }
+        .swipe-hint { display: none !important; }
     }
 </style>
 
 <div class="report-ui-wrapper">
-    
-    <!-- Controls -->
+
+    <!-- ── CONTROL BAR ── -->
     <div class="report-controls no-print">
         <div class="period-selector">
-            <a href="/reports?period=daily" class="period-btn {{ 'active' if period == 'daily' }}">Daily Audit</a>
-            <a href="/reports?period=weekly" class="period-btn {{ 'active' if period == 'weekly' }}">Weekly Audit</a>
+            <a href="/reports?period=daily"   class="period-btn {{ 'active' if period == 'daily' }}"><i class="fas fa-calendar-day"></i> Daily</a>
+            <a href="/reports?period=weekly"  class="period-btn {{ 'active' if period == 'weekly' }}"><i class="fas fa-calendar-week"></i> Weekly</a>
+            <a href="/reports?period=monthly" class="period-btn {{ 'active' if period == 'monthly' }}"><i class="fas fa-calendar-alt"></i> Monthly</a>
         </div>
-
         <div class="btn-group">
+            <button onclick="exportCSV()" class="btn-action btn-csv">
+                <i class="fas fa-file-csv"></i> CSV
+            </button>
             <button onclick="window.print()" class="btn-action btn-pdf">
-                <i class="fas fa-file-pdf"></i> PDF
+                <i class="fas fa-file-pdf"></i> PDF / Print
             </button>
             <button onclick="downloadReportImage()" class="btn-action btn-img">
-                <i class="fas fa-image"></i> IMAGE
+                <i class="fas fa-image"></i> Image
             </button>
         </div>
     </div>
 
-    <!-- The Document -->
+    <!-- ── REPORT DOCUMENT ── -->
     <div id="report-capture-area">
+
+        <!-- Header -->
         <div class="doc-header">
-            <div class="brand-info">
-                <h2>F.L.E.X VAPE SHOP</h2>
-                <p>Inventory Management System</p>
+            <div class="brand-block">
+                <div class="brand-info">
+                    <h2>F.L.E.X VAPE SHOP</h2>
+                    <p>Inventory Management System</p>
+                </div>
             </div>
-            
-            <div class="report-type-label">{{ report_label }}</div>
-            <div class="report-date">Issued: {{ date }}</div>
+            <div class="report-meta">
+                <div class="report-type-label">{{ report_label }}</div>
+                <div class="report-date">Issued: {{ date }} &bull; {{ now }}</div>
+                <div class="report-period-badge"><i class="fas fa-calendar-alt"></i> {{ period_label }} &mdash; {{ start_date }} to {{ end_date }}</div>
+            </div>
         </div>
 
+        <!-- KPI Cards -->
         <div class="report-grid">
-            <div class="stat-card">
-                <label>Gross Revenue</label>
-                <div class="value green">₱{{ "{:,.2f}".format(revenue) }}</div>
+            <div class="stat-card" style="--card-accent:#10b981;">
+                <label><i class="fas fa-peso-sign"></i> Gross Revenue</label>
+                <div class="value green">&#8369;{{ "{:,.2f}".format(revenue) }}</div>
+                <div class="sub">{{ period_label }}</div>
             </div>
-            <div class="stat-card">
-                <label>Sales Volume</label>
-                <div class="value">{{ sales_count }} Sales</div>
+            <div class="stat-card" style="--card-accent:#705194;">
+                <label><i class="fas fa-receipt"></i> Transactions</label>
+                <div class="value purple">{{ sales_count }}</div>
+                <div class="sub">Avg &#8369;{{ "{:,.0f}".format(avg_txn) }} / txn</div>
+            </div>
+            <div class="stat-card" style="--card-accent:#3b82f6;">
+                <label><i class="fas fa-boxes-stacked"></i> Units Sold</label>
+                <div class="value blue">{{ units_sold }}</div>
+                <div class="sub">{{ units_in }} units restocked</div>
+            </div>
+            <div class="stat-card" style="--card-accent:{% if warn_count > 0 %}#ef4444{% else %}#10b981{% endif %};">
+                <label><i class="fas fa-triangle-exclamation"></i> Stock Alerts</label>
+                <div class="value {% if warn_count > 0 %}red{% else %}green{% endif %}">{{ warn_count }}</div>
+                <div class="sub">{% if warn_count == 0 %}All levels healthy{% else %}Items need attention{% endif %}</div>
             </div>
         </div>
 
-        <div class="section-heading">Stock Movement Summary</div>
-        <div class="swipe-hint">Swipe table to see more &rarr;</div>
+        <!-- Stock Movement Summary -->
+        <div class="section-heading"><i class="fas fa-arrow-right-arrow-left"></i> Stock Movement Summary</div>
+        <div class="swipe-hint">Swipe to see more &rarr;</div>
         <div class="table-responsive">
-            <table class="report-table">
+            <table class="report-table" id="movementTable">
                 <thead>
                     <tr>
-                        <th>Product & Flavor</th>
-                        <th style="text-align:center;">Open</th>
-                        <th style="text-align:center;">In</th>
-                        <th style="text-align:center;">Out</th>
-                        <th style="text-align:center;">End</th>
+                        <th>#</th>
+                        <th>Product</th>
+                        <th>Flavor</th>
+                        <th>Category</th>
+                        <th style="text-align:center;">Opening</th>
+                        <th style="text-align:center;">Stock In</th>
+                        <th style="text-align:center;">Stock Out</th>
+                        <th style="text-align:center;">Net</th>
+                        <th style="text-align:center;">Closing</th>
+                        <th style="text-align:right;">Revenue</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for item in movement %}
+                    {% set row_class = 'row-positive' if item.net > 0 else ('row-negative' if item.net < 0 else 'row-neutral') %}
+                    <tr class="{{ row_class }}">
+                        <td style="color:#94a3b8;font-size:0.7rem;font-weight:700;">{{ loop.index }}</td>
+                        <td><strong style="font-size:0.82rem;">{{ item.name }}</strong></td>
+                        <td style="color:var(--brand-purple);font-weight:600;font-size:0.78rem;">{{ item.flavor }}</td>
+                        <td><span class="cat-chip-sm">{{ item.category }}</span></td>
+                        <td style="text-align:center;color:#64748b;">{{ item.open }}</td>
+                        <td style="text-align:center;color:var(--brand-green);font-weight:700;">{% if item.new > 0 %}+{{ item.new }}{% else %}&mdash;{% endif %}</td>
+                        <td style="text-align:center;color:var(--brand-red);font-weight:700;">{% if item.sold > 0 %}-{{ item.sold }}{% else %}&mdash;{% endif %}</td>
+                        <td style="text-align:center;">
+                            <span class="net-badge {% if item.net > 0 %}net-pos{% elif item.net < 0 %}net-neg{% else %}net-zero{% endif %}">
+                                {% if item.net > 0 %}<i class="fas fa-arrow-up" style="font-size:.55rem;"></i> +{{ item.net }}
+                                {% elif item.net < 0 %}<i class="fas fa-arrow-down" style="font-size:.55rem;"></i> {{ item.net }}
+                                {% else %}&mdash;{% endif %}
+                            </span>
+                        </td>
+                        <td style="text-align:center;font-weight:800;font-size:0.85rem;">{{ item.end }}</td>
+                        <td style="text-align:right;" class="rev-cell">{% if item.revenue > 0 %}&#8369;{{ "{:,.2f}".format(item.revenue) }}{% else %}&mdash;{% endif %}</td>
+                    </tr>
+                    {% else %}
                     <tr>
-                        <td><strong>{{ item.name }}</strong></td>
-                        <td style="text-align:center;">{{ item.open }}</td>
-                        <td style="text-align:center; color: var(--brand-green); font-weight: 700;">+{{ item.new }}</td>
-                        <td style="text-align:center; color: var(--brand-red); font-weight: 700;">-{{ item.sold }}</td>
-                        <td style="text-align:center; font-weight: 700;">{{ item.end }}</td>
+                        <td colspan="10" style="text-align:center;padding:2rem;color:#94a3b8;">
+                            <i class="fas fa-inbox fa-2x" style="opacity:.3;display:block;margin-bottom:8px;"></i>
+                            No stock movement recorded for this period.
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
+        <p style="font-size:0.62rem;color:#94a3b8;text-align:right;margin:4px 0 0;">* Sorted by units sold descending &bull; Green rows = net stock gain &bull; Red rows = net stock decrease</p>
 
-        {% if low_stocks %}
-        <div class="section-heading" style="color: var(--brand-red);">Critical Stock Warnings</div>
-        <div class="warning-box">
-            {% for cat, items in low_stocks.items() %}
-                {% for item in items %}
-                <div class="warning-item">
-                    <span>{{ item.name }} ({{ item.flavor }})</span>
-                    <span>{{ item.qty }} UNITS LEFT</span>
+        <!-- Top Sellers -->
+        {% if top_sellers %}
+        <div class="section-heading" style="margin-top:28px;"><i class="fas fa-fire"></i> Top Sellers</div>
+        {% set max_sold = top_sellers[0].sold %}
+        <div class="sellers-grid">
+            {% for s in top_sellers %}
+            <div class="seller-row">
+                <div class="seller-rank">{{ loop.index }}</div>
+                <div style="flex:1;min-width:0;">
+                    <div class="seller-name">{{ s.name }}</div>
+                    <div class="seller-flavor">{{ s.flavor }}</div>
                 </div>
-                {% endfor %}
+                <div class="seller-bar-wrap">
+                    <div class="seller-bar" style="width:{{ ((s.sold / max_sold) * 100)|int }}%;"></div>
+                </div>
+                <div class="seller-qty">{{ s.sold }} sold</div>
+                <div style="font-size:0.72rem;color:var(--brand-green);font-weight:700;min-width:72px;text-align:right;">&#8369;{{ "{:,.0f}".format(s.revenue) }}</div>
+            </div>
             {% endfor %}
         </div>
         {% endif %}
 
-        <div class="doc-footer">
-            <span>Auth: {{ now }}</span>
-            <span>F.L.E.X System &bull; Inventory Record</span>
+        <!-- Category Performance -->
+        {% if cat_perf %}
+        <div class="section-heading" style="margin-top:28px;"><i class="fas fa-chart-pie"></i> Category Performance</div>
+        <div class="cat-perf-grid">
+            {% for cat, stats in cat_perf %}
+            <div class="cat-perf-card">
+                <div class="cat-perf-name">{{ cat }}</div>
+                <div class="cat-perf-rev">&#8369;{{ "{:,.0f}".format(stats.revenue) }}</div>
+                <div class="cat-perf-sold">{{ stats.sold }} sold &bull; {{ stats.in }} restocked</div>
+            </div>
+            {% endfor %}
         </div>
-    </div>
+        {% endif %}
+
+        <!-- Critical Stock Warnings -->
+        <div class="section-heading" style="margin-top:28px;color:{% if warn_count > 0 %}var(--brand-red){% else %}var(--brand-green){% endif %};">
+            <i class="fas fa-{% if warn_count > 0 %}triangle-exclamation{% else %}shield-halved{% endif %}"></i>
+            Critical Stock Warnings
+        </div>
+
+        {% if warn_count > 0 %}
+        <div class="table-responsive warn-table-wrap">
+            <table class="warn-table" id="warnTable">
+                <thead>
+                    <tr>
+                        <th>Product</th>
+                        <th>Flavor</th>
+                        <th>Category</th>
+                        <th>Code</th>
+                        <th style="text-align:center;">Stock</th>
+                        <th style="text-align:center;">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in low_stocks.out %}
+                    <tr>
+                        <td><strong>{{ item.name }}</strong></td>
+                        <td style="color:var(--muted);font-size:0.75rem;">{{ item.flavor or '—' }}</td>
+                        <td style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;">{{ item.type or '—' }}</td>
+                        <td><span style="background:#ede9f8;color:#705194;padding:2px 6px;border-radius:5px;font-size:0.62rem;font-weight:800;font-family:monospace;">{{ item.code_name or '—' }}</span></td>
+                        <td style="text-align:center;"><span class="stock-num out">0</span></td>
+                        <td style="text-align:center;"><span class="sev-badge sev-out"><i class="fas fa-circle-xmark" style="font-size:.7rem;"></i> Out of Stock</span></td>
+                    </tr>
+                    {% endfor %}
+                    {% for item in low_stocks.critical %}
+                    <tr>
+                        <td><strong>{{ item.name }}</strong></td>
+                        <td style="color:var(--muted);font-size:0.75rem;">{{ item.flavor or '—' }}</td>
+                        <td style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;">{{ item.type or '—' }}</td>
+                        <td><span style="background:#ede9f8;color:#705194;padding:2px 6px;border-radius:5px;font-size:0.62rem;font-weight:800;font-family:monospace;">{{ item.code_name or '—' }}</span></td>
+                        <td style="text-align:center;"><span class="stock-num critical">{{ item.qty }}</span></td>
+                        <td style="text-align:center;"><span class="sev-badge sev-critical"><i class="fas fa-triangle-exclamation" style="font-size:.7rem;"></i> Critical</span></td>
+                    </tr>
+                    {% endfor %}
+                    {% for item in low_stocks.low %}
+                    <tr>
+                        <td><strong>{{ item.name }}</strong></td>
+                        <td style="color:var(--muted);font-size:0.75rem;">{{ item.flavor or '—' }}</td>
+                        <td style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;">{{ item.type or '—' }}</td>
+                        <td><span style="background:#ede9f8;color:#705194;padding:2px 6px;border-radius:5px;font-size:0.62rem;font-weight:800;font-family:monospace;">{{ item.code_name or '—' }}</span></td>
+                        <td style="text-align:center;"><span class="stock-num low">{{ item.qty }}</span></td>
+                        <td style="text-align:center;"><span class="sev-badge sev-low"><i class="fas fa-circle-exclamation" style="font-size:.7rem;"></i> Low</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <p style="font-size:0.62rem;color:#94a3b8;margin:4px 0 0 2px;">
+            <span style="color:#b91c1c;font-weight:700;">&#x25CF; Out of Stock</span> &nbsp;
+            <span style="color:#c2410c;font-weight:700;">&#x25CF; Critical (1–2 pcs)</span> &nbsp;
+            <span style="color:#a16207;font-weight:700;">&#x25CF; Low (3–4 pcs)</span>
+        </p>
+        {% else %}
+        <div class="no-warn-msg">
+            <i class="fas fa-circle-check"></i>
+            All products have healthy stock levels. No warnings at this time.
+        </div>
+        {% endif %}
+
+        <!-- Footer -->
+        <div class="doc-footer">
+            <span>Generated: <strong>{{ date }}</strong> at <strong>{{ now }}</strong></span>
+            <span>F.L.E.X Inventory System &bull; Audit Record</span>
+        </div>
+    </div><!-- /report-capture-area -->
 </div>
 
 <script>
+/* ──── Image Export ──── */
 async function downloadReportImage() {
     const reportArea = document.getElementById('report-capture-area');
-    const downloadBtn = document.querySelector('.btn-img');
-    
-    downloadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>...';
-    downloadBtn.disabled = true;
-
+    const btn = document.querySelector('.btn-img');
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Exporting...';
+    btn.disabled = true;
     try {
-        const canvas = await html2canvas(reportArea, {
-            scale: 3, 
-            useCORS: true,
-            backgroundColor: "#ffffff",
-        });
-
+        const canvas = await html2canvas(reportArea, { scale:3, useCORS:true, backgroundColor:'#ffffff' });
         const link = document.createElement('a');
-        link.href = canvas.toDataURL("image/png", 1.0);
-        link.download = `FLEX_Report_{{ date }}.png`;
+        link.href = canvas.toDataURL('image/png', 1.0);
+        link.download = 'FLEX_Report_{{ date }}.png';
         link.click();
-    } catch (err) {
-        alert("Export failed.");
-    } finally {
-        downloadBtn.innerHTML = '<i class="fas fa-image"></i> IMAGE';
-        downloadBtn.disabled = false;
+    } catch(e) { alert('Image export failed.'); }
+    finally {
+        btn.innerHTML = '<i class="fas fa-image"></i> Image';
+        btn.disabled = false;
     }
 }
+
+/* ──── CSV Export ──── */
+function exportCSV() {
+    const rows = [['#','Product','Flavor','Category','Opening','Stock In','Stock Out','Net','Closing','Revenue']];
+    document.querySelectorAll('#movementTable tbody tr').forEach((tr, i) => {
+        const cells = tr.querySelectorAll('td');
+        if (cells.length < 2) return;
+        rows.push([
+            cells[0]?.innerText.trim(),
+            cells[1]?.innerText.trim(),
+            cells[2]?.innerText.trim(),
+            cells[3]?.innerText.trim(),
+            cells[4]?.innerText.trim(),
+            cells[5]?.innerText.trim(),
+            cells[6]?.innerText.trim(),
+            cells[7]?.innerText.trim(),
+            cells[8]?.innerText.trim(),
+            cells[9]?.innerText.trim(),
+        ]);
+    });
+    const csvContent = rows.map(r => r.map(v => '"'+String(v||'').replace(/"/g,'""')+'"').join(',')).join('\\n');
+    const blob = new Blob(['\uFEFF'+csvContent], {type:'text/csv;charset=utf-8;'});
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'FLEX_StockMovement_{{ date }}.csv';
+    link.click();
+}
+
 </script>
 {% endblock %}
 """
@@ -4198,6 +5595,7 @@ TEMPLATES["purchase_report.html"] = """
 
 {% block content %}
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
 <style>
     :root {
@@ -4402,12 +5800,215 @@ TEMPLATES["purchase_report.html"] = """
         .period-selector { min-width: 100%; }
     }
 
+    /* ── Page setup ── */
+    @page { size: A4 portrait; margin: 12mm 10mm 14mm; }
+
+    /* ===================================================================
+       PRINT LAYOUT — Purchase / Stock-In Report
+       Visual identity: Centered document box · Green accents ·
+       Receipt-style tables · Received-by signature block
+    =================================================================== */
     @media print {
-        nav, .sidebar, .mobile-header, .mobile-toggle, .no-print, header, .swipe-hint { display: none !important; }
-        body { background: white; margin: 0; padding: 0; }
-        .main-content { margin-left: 0 !important; width: 100% !important; padding: 0 !important; }
-        #report-capture-area { border: none; box-shadow: none; padding: 40px; width: 100%; }
-        .table-responsive { overflow: visible !important; }
+
+        /* ── 0. ISOLATE THE DOCUMENT ── */
+        body * { visibility: hidden !important; }
+        #report-capture-area,
+        #report-capture-area * { visibility: visible !important; }
+
+        /* ── 1. CANVAS ── */
+        #report-capture-area {
+            position: fixed !important;
+            top: 0 !important; left: 0 !important;
+            width: 100vw !important; height: auto !important;
+            margin: 0 !important;
+            padding: 28px 32px 24px !important;
+            border: none !important; box-shadow: none !important;
+            border-radius: 0 !important; background: #fff !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+
+        /* ── 2. HEADER: centered formal document box ── */
+        .doc-header {
+            display: block !important;
+            text-align: center !important;
+            border: 2px solid #162135 !important;
+            border-top: 6px solid #059669 !important;
+            border-radius: 0 !important;
+            padding: 16px 24px 14px !important;
+            margin-bottom: 20px !important;
+            background: #f8fafc !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .brand-info { display: block !important; text-align: center !important; }
+        .brand-info h2 {
+            font-size: 1.1rem !important; font-weight: 900 !important;
+            color: #162135 !important; letter-spacing: 2px !important;
+            text-transform: uppercase !important; margin: 0 !important;
+        }
+        .brand-info p {
+            font-size: 0.6rem !important; color: #64748b !important;
+            margin: 3px 0 0 !important; letter-spacing: 1px !important;
+            text-transform: uppercase !important;
+        }
+        .report-type-label {
+            font-size: 0.75rem !important; font-weight: 900 !important;
+            color: #162135 !important; text-transform: uppercase !important;
+            letter-spacing: 1.5px !important;
+            border-top: 1px solid #cbd5e1 !important;
+            padding-top: 10px !important; margin-top: 10px !important;
+        }
+        .report-date { font-size: 0.62rem !important; color: #64748b !important; margin-top: 4px !important; }
+        .report-period-badge {
+            display: inline-block !important;
+            background: #059669 !important;
+            color: white !important;
+            border-radius: 2px !important;
+            font-size: 0.58rem !important; font-weight: 800 !important;
+            padding: 3px 12px !important; margin-top: 8px !important;
+            letter-spacing: 1px !important; text-transform: uppercase !important;
+            border: none !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+
+        /* ── 3. KPI METRICS: flat horizontal ledger strip ── */
+        .report-grid {
+            display: grid !important;
+            grid-template-columns: repeat(3, 1fr) !important;
+            gap: 0 !important;
+            border: 1.5px solid #162135 !important;
+            border-radius: 0 !important;
+            margin-bottom: 18px !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .stat-card {
+            border: none !important;
+            border-right: 1px solid #94a3b8 !important;
+            border-radius: 0 !important;
+            padding: 10px 14px !important;
+            box-shadow: none !important;
+            text-align: center !important;
+            background: white !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .stat-card:last-child { border-right: none !important; }
+        .stat-card label {
+            display: block !important;
+            font-size: 0.5rem !important; text-transform: uppercase !important;
+            letter-spacing: 0.6px !important; color: #475569 !important;
+            font-weight: 800 !important; margin-bottom: 5px !important;
+        }
+        .stat-card .value { font-size: 1.05rem !important; font-weight: 900 !important; }
+        .stat-card .value.blue   { color: #1d4ed8 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .stat-card .value.orange { color: #b45309 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .stat-card .value.green  { color: #059669 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+        /* ── 4. SECTION HEADINGS: green left-accent + tinted background ── */
+        .section-heading {
+            display: block !important;
+            font-size: 0.58rem !important; font-weight: 900 !important;
+            text-transform: uppercase !important; letter-spacing: 1.2px !important;
+            color: #162135 !important;
+            background: #f0fdf4 !important;
+            border-left: 4px solid #059669 !important;
+            border-top: 1px solid #bbf7d0 !important;
+            border-bottom: 1px solid #bbf7d0 !important;
+            padding: 5px 12px !important;
+            margin: 14px 0 8px !important;
+            page-break-after: avoid !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .section-heading::after { display: none !important; }
+        .section-heading i { display: none !important; }
+
+        /* ── 5. CATEGORY CHIPS: compact two-column list ── */
+        .cat-grid {
+            display: grid !important;
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)) !important;
+            gap: 5px !important; margin-bottom: 14px !important;
+            page-break-inside: avoid !important;
+        }
+        .cat-chip {
+            border: 1px solid #d1fae5 !important;
+            border-radius: 0 !important;
+            border-left: 3px solid #059669 !important;
+            padding: 6px 10px !important;
+            background: #f0fdf4 !important;
+            flex-direction: row !important;
+            justify-content: space-between !important;
+            align-items: center !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .cat-chip .cat-name { font-size: 0.6rem !important; color: #1a3a2a !important; font-weight: 700 !important; }
+        .cat-chip .cat-qty  { font-size: 0.8rem !important; color: #059669 !important; font-weight: 900 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+        /* ── 6. TABLES: receipt-style, compact, green detail ── */
+        .table-responsive {
+            overflow: visible !important;
+            border: 1px solid #94a3b8 !important;
+            border-radius: 0 !important; margin-bottom: 12px !important;
+        }
+        .report-table, .log-table {
+            width: 100% !important; min-width: unset !important;
+            font-size: 0.62rem !important; border-collapse: collapse !important;
+        }
+        .report-table th, .log-table th {
+            background: #162135 !important; color: #ffffff !important;
+            padding: 6px 8px !important; font-size: 0.54rem !important;
+            font-weight: 800 !important; text-transform: uppercase !important;
+            letter-spacing: 0.5px !important; border: none !important;
+            white-space: nowrap !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        .report-table td, .log-table td {
+            padding: 5px 8px !important;
+            border-bottom: 1px solid #e2e8f0 !important;
+            border-right: 1px solid #e8edf2 !important;
+            vertical-align: middle !important; font-size: 0.62rem !important;
+        }
+        .report-table tbody tr:nth-child(odd) td,
+        .log-table tbody tr:nth-child(odd) td { background: white !important; }
+        .report-table tbody tr:nth-child(even) td,
+        .log-table tbody tr:nth-child(even) td {
+            background: #f0fdf4 !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+
+        /* ── 7. QTY BADGE ── */
+        .qty-badge {
+            background: #d1fae5 !important; color: #065f46 !important;
+            border: 1px solid #a7f3d0 !important;
+            border-radius: 2px !important; font-size: 0.55rem !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+
+        /* ── 8. FOOTER: double-line signature block ── */
+        .doc-footer {
+            border-top: 2px solid #162135 !important;
+            margin-top: 18px !important; padding-top: 10px !important;
+            display: flex !important; justify-content: space-between !important;
+            font-size: 0.55rem !important; color: #475569 !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+
+        /* Signature rows via pseudo-element */
+        .doc-footer::after {
+            content: "Received By: ________________________________     Date Received: ________________     Checked By: ____________________________";
+            display: block !important;
+            width: 100% !important;
+            font-size: 0.58rem !important; color: #475569 !important;
+            padding-top: 10px !important; margin-top: 12px !important;
+            border-top: 1px dashed #a7f3d0 !important;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+
+        /* ── 9. PAGE BREAKS ── */
+        .cat-grid { page-break-inside: avoid !important; }
+        .report-table thead, .log-table thead { display: table-header-group !important; }
+        .report-table tbody tr, .log-table tbody tr { page-break-inside: avoid !important; }
+
+        /* ── 10. UTILITIES ── */
+        a { text-decoration: none !important; }
+        .swipe-hint { display: none !important; }
     }
 </style>
 
@@ -4423,7 +6024,7 @@ TEMPLATES["purchase_report.html"] = """
 
         <div class="btn-group">
             <button onclick="window.print()" class="btn-action btn-pdf">
-                <i class="fas fa-file-pdf"></i> PDF
+                <i class="fas fa-file-pdf"></i> PDF / Print
             </button>
             <button onclick="downloadReportImage()" class="btn-action btn-img">
                 <i class="fas fa-image"></i> IMAGE
@@ -4473,6 +6074,17 @@ TEMPLATES["purchase_report.html"] = """
             {% endfor %}
         </div>
         {% endif %}
+
+        <!-- Charts Section -->
+        <div class="section-heading">Purchasing Trends &amp; Insights</div>
+        <div class="charts-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">
+            <div class="chart-box" style="background:#fafafa;border:1px solid var(--border-light);border-radius:12px;padding:16px;">
+                <canvas id="trendChart"></canvas>
+            </div>
+            <div class="chart-box" style="background:#fafafa;border:1px solid var(--border-light);border-radius:12px;padding:16px;">
+                <canvas id="categoryChart"></canvas>
+            </div>
+        </div>
 
         <!-- Product Breakdown Table -->
         <div class="section-heading">Product Purchase Breakdown</div>
@@ -4559,6 +6171,63 @@ TEMPLATES["purchase_report.html"] = """
 </div>
 
 <script>
+// ── Chart.js Visualizations ──
+(function loadCharts() {
+    const period = '{{ period }}';
+    fetch('/api/purchase_report_chart?period=' + period)
+        .then(r => r.json())
+        .then(data => {
+            // Trend chart
+            if (data.trend.labels.length > 0) {
+                new Chart(document.getElementById('trendChart'), {
+                    type: 'bar',
+                    data: {
+                        labels: data.trend.labels,
+                        datasets: [{
+                            label: 'Units Received',
+                            data: data.trend.values,
+                            backgroundColor: 'rgba(112,81,148,0.7)',
+                            borderColor: '#705194',
+                            borderWidth: 2,
+                            borderRadius: 6,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            title: { display: true, text: 'Daily Purchase Trend', font: { weight: 'bold', size: 13 } },
+                            legend: { display: false }
+                        },
+                        scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+                    }
+                });
+            }
+            // Category chart
+            if (data.categories.labels.length > 0) {
+                const colors = ['#705194','#10b981','#f59e0b','#3b82f6','#ef4444','#8b5cf6','#06b6d4','#ec4899'];
+                new Chart(document.getElementById('categoryChart'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: data.categories.labels,
+                        datasets: [{
+                            data: data.categories.values,
+                            backgroundColor: colors.slice(0, data.categories.labels.length),
+                            borderWidth: 2,
+                            borderColor: '#fff',
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            title: { display: true, text: 'Units by Category', font: { weight: 'bold', size: 13 } },
+                            legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } }
+                        }
+                    }
+                });
+            }
+        });
+})();
+
 async function downloadReportImage() {
     const reportArea = document.getElementById('report-capture-area');
     const downloadBtn = document.querySelector('.btn-img');
@@ -4578,6 +6247,1204 @@ async function downloadReportImage() {
         downloadBtn.innerHTML = '<i class="fas fa-image"></i> IMAGE';
         downloadBtn.disabled = false;
     }
+}
+
+</script>
+{% endblock %}
+"""
+
+# ──────────────────────────────────────────────────────────────────────
+# TEMPLATE: suppliers.html
+# ──────────────────────────────────────────────────────────────────────
+TEMPLATES["suppliers.html"] = """
+{% extends "base.html" %}
+{% block content %}
+<style>
+    :root { --brand:#705194; --brand-light:#f3eeff; --brand-dark:#5a3f7a; --green:#10b981; --green-light:#ecfdf5; --red:#ef4444; --red-light:#fef2f2; --orange:#f59e0b; --blue:#3b82f6; --blue-light:#eff6ff; --navy:#162135; --radius:16px; --radius-sm:10px; --shadow:0 2px 10px rgba(112,81,148,.05); --shadow-lg:0 8px 30px rgba(112,81,148,.1); }
+
+    /* Animations */
+    @keyframes fadeInUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes slideDown { from { opacity:0; transform:translateY(-10px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes scaleIn { from { opacity:0; transform:scale(0.95); } to { opacity:1; transform:scale(1); } }
+    @keyframes pulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.05); } }
+    @keyframes shimmer { 0% { background-position:-200% 0; } 100% { background-position:200% 0; } }
+    @keyframes countUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+
+    .suppliers-wrapper { max-width:960px; margin:0 auto; padding:10px; }
+
+    /* Header */
+    .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:12px; animation:fadeInUp 0.4s ease both; }
+    .page-header h2 { margin:0; font-size:1.2rem; font-weight:800; color:#1e293b; display:flex; align-items:center; gap:10px; }
+    .page-header h2 .icon-wrap { width:38px; height:38px; background:linear-gradient(135deg,var(--brand),var(--brand-dark)); border-radius:10px; display:flex; align-items:center; justify-content:center; color:white; font-size:0.9rem; box-shadow:0 4px 14px rgba(112,81,148,.3); }
+
+    .header-actions { display:flex; gap:8px; }
+    .btn-add { background:linear-gradient(135deg,var(--brand),var(--brand-dark)); color:white; border:none; padding:10px 22px; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.82rem; display:flex; align-items:center; gap:7px; transition:all 0.25s ease; box-shadow:0 4px 14px rgba(112,81,148,.25); position:relative; overflow:hidden; }
+    .btn-add:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(112,81,148,.35); }
+    .btn-add:active { transform:translateY(0) scale(0.97); }
+    .btn-add::after { content:''; position:absolute; inset:0; background:linear-gradient(90deg,transparent,rgba(255,255,255,.15),transparent); background-size:200% 100%; animation:shimmer 3s infinite; }
+
+    /* Stats Row */
+    .stats-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:20px; }
+    .stat-card { background:white; border:1.5px solid #e8e4f0; border-radius:var(--radius); padding:16px 18px; box-shadow:var(--shadow); position:relative; overflow:hidden; transition:all 0.3s ease; }
+    .stat-card:hover { transform:translateY(-2px); box-shadow:var(--shadow-lg); border-color:rgba(112,81,148,.2); }
+    .stat-card .stat-icon { width:36px; height:36px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:0.85rem; margin-bottom:10px; }
+    .stat-card .stat-icon.purple { background:var(--brand-light); color:var(--brand); }
+    .stat-card .stat-icon.green { background:var(--green-light); color:var(--green); }
+    .stat-card .stat-icon.blue { background:var(--blue-light); color:var(--blue); }
+    .stat-card .stat-icon.orange { background:#fffbeb; color:var(--orange); }
+    .stat-card .stat-label { font-size:0.65rem; font-weight:800; text-transform:uppercase; color:#94a3b8; letter-spacing:0.6px; margin-bottom:4px; }
+    .stat-card .stat-value { font-size:1.35rem; font-weight:900; color:#1e293b; animation:countUp 0.5s ease both; }
+    .stat-card::before { content:''; position:absolute; top:0; right:0; width:80px; height:80px; border-radius:50%; opacity:0.04; transform:translate(20px,-20px); }
+    .stat-card:nth-child(1)::before { background:var(--brand); }
+    .stat-card:nth-child(2)::before { background:var(--green); }
+    .stat-card:nth-child(3)::before { background:var(--orange); }
+    .stat-card:nth-child(4)::before { background:var(--blue); }
+
+    /* Search & Filter Toolbar */
+    .toolbar { display:flex; gap:10px; margin-bottom:16px; align-items:center; flex-wrap:wrap; animation:fadeInUp 0.4s ease 0.1s both; }
+    .search-box { flex:1; min-width:200px; position:relative; }
+    .search-box i { position:absolute; left:12px; top:50%; transform:translateY(-50%); color:#94a3b8; font-size:0.8rem; }
+    .search-box input { width:100%; padding:10px 12px 10px 36px; border:1.5px solid #e8e4f0; border-radius:var(--radius-sm); font-size:0.82rem; transition:all 0.25s ease; box-sizing:border-box; background:white; }
+    .search-box input:focus { outline:none; border-color:var(--brand); box-shadow:0 0 0 3px rgba(112,81,148,.1); }
+    .view-toggle { display:flex; background:#f1f5f9; padding:3px; border-radius:8px; }
+    .view-btn { border:none; background:transparent; padding:7px 12px; border-radius:6px; cursor:pointer; color:#94a3b8; font-size:0.8rem; transition:all 0.2s; }
+    .view-btn.active { background:white; color:var(--brand); box-shadow:0 2px 8px rgba(0,0,0,.06); font-weight:700; }
+
+    /* Grid */
+    .supplier-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); gap:14px; }
+
+    /* Cards */
+    .supplier-card { background:white; border:1.5px solid #e8e4f0; border-radius:var(--radius); padding:18px; box-shadow:var(--shadow); position:relative; transition:all 0.3s cubic-bezier(0.4,0,0.2,1); overflow:hidden; }
+    .supplier-card:hover { transform:translateY(-3px); box-shadow:var(--shadow-lg); border-color:rgba(112,81,148,.25); }
+    .supplier-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; background:linear-gradient(90deg,var(--brand),#9b6fc4,var(--brand)); opacity:0; transition:opacity 0.3s; }
+    .supplier-card:hover::before { opacity:1; }
+    .supplier-card:nth-child(1) { animation:fadeInUp 0.4s ease 0.15s both; }
+    .supplier-card:nth-child(2) { animation:fadeInUp 0.4s ease 0.2s both; }
+    .supplier-card:nth-child(3) { animation:fadeInUp 0.4s ease 0.25s both; }
+    .supplier-card:nth-child(4) { animation:fadeInUp 0.4s ease 0.3s both; }
+    .supplier-card:nth-child(n+5) { animation:fadeInUp 0.4s ease 0.35s both; }
+
+    .card-top { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; }
+    .card-top h3 { margin:0; font-size:0.92rem; color:#1e293b; font-weight:800; }
+    .po-count { display:inline-flex; align-items:center; gap:3px; background:var(--brand-light); color:var(--brand); padding:3px 9px; border-radius:99px; font-size:0.62rem; font-weight:800; transition:all 0.2s; }
+    .po-count:hover { background:var(--brand); color:white; }
+    .supplier-card .meta { font-size:0.74rem; color:#64748b; margin-bottom:4px; display:flex; align-items:center; gap:7px; }
+    .supplier-card .meta i { width:14px; color:var(--brand); font-size:0.7rem; }
+    .supplier-card .actions { display:flex; gap:6px; margin-top:12px; border-top:1px solid #f1f5f9; padding-top:10px; }
+    .btn-sm { border:none; padding:6px 12px; border-radius:7px; font-size:0.7rem; font-weight:700; cursor:pointer; display:flex; align-items:center; gap:4px; transition:all 0.2s ease; }
+    .btn-edit { background:#f1f5f9; color:#475569; }
+    .btn-edit:hover { background:#e2e8f0; transform:translateY(-1px); }
+    .btn-delete { background:var(--red-light); color:var(--red); }
+    .btn-delete:hover { background:#fecaca; transform:translateY(-1px); }
+    .btn-email { background:var(--blue-light); color:var(--blue); }
+    .btn-email:hover { background:#dbeafe; transform:translateY(-1px); }
+    .btn-orders { background:var(--green-light); color:var(--green); }
+    .btn-orders:hover { background:#d1fae5; transform:translateY(-1px); }
+
+    /* List View */
+    .supplier-list { display:flex; flex-direction:column; gap:8px; }
+    .supplier-list .supplier-row { background:white; border:1.5px solid #e8e4f0; border-radius:var(--radius-sm); padding:12px 18px; display:flex; justify-content:space-between; align-items:center; gap:12px; box-shadow:var(--shadow); transition:all 0.25s ease; }
+    .supplier-list .supplier-row:hover { border-color:rgba(112,81,148,.25); box-shadow:var(--shadow-lg); transform:translateX(3px); }
+    .supplier-list .row-info { display:flex; align-items:center; gap:14px; flex:1; min-width:0; }
+    .supplier-list .row-avatar { width:38px; height:38px; background:linear-gradient(135deg,var(--brand-light),#e8e4f0); border-radius:10px; display:flex; align-items:center; justify-content:center; font-weight:900; color:var(--brand); font-size:0.85rem; flex-shrink:0; }
+    .supplier-list .row-details { min-width:0; }
+    .supplier-list .row-details h4 { margin:0; font-size:0.85rem; color:#1e293b; }
+    .supplier-list .row-details .meta-inline { font-size:0.7rem; color:#94a3b8; display:flex; gap:10px; flex-wrap:wrap; }
+    .supplier-list .row-actions { display:flex; gap:5px; }
+
+    /* Modal */
+    .modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,.5); z-index:1000; align-items:center; justify-content:center; backdrop-filter:blur(4px); }
+    .modal-overlay.active { display:flex; }
+    .modal-box { background:white; border-radius:var(--radius); padding:28px; width:92%; max-width:500px; max-height:90vh; overflow-y:auto; animation:scaleIn 0.3s cubic-bezier(0.4,0,0.2,1); box-shadow:0 20px 60px rgba(0,0,0,.15); }
+    .modal-box h3 { margin:0 0 20px; font-size:1.05rem; font-weight:800; color:#1e293b; display:flex; align-items:center; gap:8px; }
+    .modal-box h3 i { color:var(--brand); }
+    .form-group { margin-bottom:14px; }
+    .form-group label { display:block; font-size:0.7rem; font-weight:800; color:#475569; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:5px; }
+    .form-group input, .form-group textarea { width:100%; padding:11px 14px; border:1.5px solid #e8e4f0; border-radius:var(--radius-sm); font-size:0.82rem; box-sizing:border-box; transition:all 0.25s ease; background:white; }
+    .form-group input:focus, .form-group textarea:focus { outline:none; border-color:var(--brand); box-shadow:0 0 0 3px rgba(112,81,148,.1); }
+    .form-group input::placeholder { color:#cbd5e1; }
+    .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:20px; }
+    .btn-cancel { background:#f1f5f9; color:#475569; border:none; padding:11px 22px; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.82rem; transition:all 0.2s; }
+    .btn-cancel:hover { background:#e2e8f0; }
+    .btn-save { background:linear-gradient(135deg,var(--brand),var(--brand-dark)); color:white; border:none; padding:11px 22px; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.82rem; transition:all 0.25s; box-shadow:0 4px 14px rgba(112,81,148,.25); }
+    .btn-save:hover { transform:translateY(-1px); box-shadow:0 6px 18px rgba(112,81,148,.35); }
+
+    /* Empty State */
+    .empty-state { text-align:center; padding:60px 20px; color:#94a3b8; animation:fadeInUp 0.5s ease both; }
+    .empty-state .empty-icon { width:80px; height:80px; background:var(--brand-light); border-radius:50%; display:flex; align-items:center; justify-content:center; margin:0 auto 16px; font-size:1.8rem; color:var(--brand); animation:pulse 2s ease infinite; }
+    .empty-state h3 { font-size:1rem; color:#475569; margin:0 0 6px; }
+    .empty-state p { font-size:0.82rem; margin:0; }
+
+    /* Responsive */
+    @media (max-width:600px) {
+        .stats-row { grid-template-columns:repeat(2,1fr); }
+        .supplier-grid { grid-template-columns:1fr; }
+        .supplier-list .row-info { flex-direction:column; align-items:flex-start; gap:6px; }
+    }
+</style>
+
+<div class="suppliers-wrapper">
+    <!-- Header -->
+    <div class="page-header">
+        <h2><span class="icon-wrap"><i class="fas fa-truck"></i></span> Suppliers</h2>
+        <div class="header-actions">
+            <button class="btn-add" onclick="openModal()"><i class="fas fa-plus"></i> Add Supplier</button>
+        </div>
+    </div>
+
+    <!-- Stats Dashboard -->
+    <div class="stats-row">
+        <div class="stat-card">
+            <div class="stat-icon purple"><i class="fas fa-truck"></i></div>
+            <div class="stat-label">Total Suppliers</div>
+            <div class="stat-value">{{ total_suppliers }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon green"><i class="fas fa-file-invoice"></i></div>
+            <div class="stat-label">Total PO</div>
+            <div class="stat-value">{{ total_pos }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon orange"><i class="fas fa-clock"></i></div>
+            <div class="stat-label">Active Orders</div>
+            <div class="stat-value">{{ active_pos }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon blue"><i class="fas fa-coins"></i></div>
+            <div class="stat-label">Total Spent</div>
+            <div class="stat-value">₱{{ "{:,.2f}".format(total_spent) }}</div>
+        </div>
+    </div>
+
+    <!-- Search & Toolbar -->
+    <div class="toolbar">
+        <div class="search-box">
+            <i class="fas fa-search"></i>
+            <input type="text" id="searchInput" placeholder="Search suppliers by name, contact, or address..." oninput="filterSuppliers()">
+        </div>
+        <div class="view-toggle">
+            <button class="view-btn active" id="gridViewBtn" onclick="setView('grid')"><i class="fas fa-th-large"></i></button>
+            <button class="view-btn" id="listViewBtn" onclick="setView('list')"><i class="fas fa-list"></i></button>
+        </div>
+    </div>
+
+    {% if suppliers %}
+    <!-- Grid View -->
+    <div class="supplier-grid" id="gridView">
+        {% for s in suppliers %}
+        <div class="supplier-card" data-search="{{ s.name|lower }} {{ (s.contact or '')|lower }} {{ (s.address or '')|lower }} {{ (s.phone or '')|lower }} {{ (s.email or '')|lower }}">
+            <div class="card-top">
+                <h3>{{ s.name }}</h3>
+                <span class="po-count"><i class="fas fa-file-invoice" style="font-size:0.55rem;"></i> {{ s.purchase_orders|length }} PO</span>
+            </div>
+            {% if s.contact %}<div class="meta"><i class="fas fa-user"></i>{{ s.contact }}</div>{% endif %}
+            {% if s.phone %}<div class="meta"><i class="fas fa-phone"></i>{{ s.phone }}</div>{% endif %}
+            {% if s.email %}<div class="meta"><i class="fas fa-envelope"></i>{{ s.email }}</div>{% endif %}
+            {% if s.address %}<div class="meta"><i class="fas fa-map-marker-alt"></i>{{ s.address }}</div>{% endif %}
+            <div class="actions">
+                <button class="btn-sm btn-edit" onclick="openEditModal({{ s.id }}, '{{ s.name|e }}', '{{ s.contact|e }}', '{{ s.phone|e }}', '{{ s.email|e }}', '{{ s.address|e }}')"><i class="fas fa-pen"></i> Edit</button>
+                {% if s.email %}<a href="mailto:{{ s.email }}" class="btn-sm btn-email"><i class="fas fa-envelope"></i> Email</a>{% endif %}
+                <a href="/purchase_orders?supplier={{ s.id }}" class="btn-sm btn-orders"><i class="fas fa-file-invoice"></i> Orders</a>
+                <form method="POST" action="/supplier/delete/{{ s.id }}" onsubmit="return confirm('Delete {{ s.name|e }}?')" style="display:inline;margin-left:auto;">
+                    <button class="btn-sm btn-delete" type="submit"><i class="fas fa-trash"></i></button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- List View -->
+    <div class="supplier-list" id="listView" style="display:none;">
+        {% for s in suppliers %}
+        <div class="supplier-row" data-search="{{ s.name|lower }} {{ (s.contact or '')|lower }} {{ (s.address or '')|lower }} {{ (s.phone or '')|lower }} {{ (s.email or '')|lower }}">
+            <div class="row-info">
+                <div class="row-avatar">{{ s.name[0]|upper }}</div>
+                <div class="row-details">
+                    <h4>{{ s.name }} <span class="po-count" style="margin-left:6px;"><i class="fas fa-file-invoice" style="font-size:0.5rem;"></i> {{ s.purchase_orders|length }}</span></h4>
+                    <div class="meta-inline">
+                        {% if s.contact %}<span><i class="fas fa-user"></i> {{ s.contact }}</span>{% endif %}
+                        {% if s.phone %}<span><i class="fas fa-phone"></i> {{ s.phone }}</span>{% endif %}
+                        {% if s.email %}<span><i class="fas fa-envelope"></i> {{ s.email }}</span>{% endif %}
+                        {% if s.address %}<span><i class="fas fa-map-marker-alt"></i> {{ s.address }}</span>{% endif %}
+                    </div>
+                </div>
+            </div>
+            <div class="row-actions">
+                <button class="btn-sm btn-edit" onclick="openEditModal({{ s.id }}, '{{ s.name|e }}', '{{ s.contact|e }}', '{{ s.phone|e }}', '{{ s.email|e }}', '{{ s.address|e }}')"><i class="fas fa-pen"></i></button>
+                <form method="POST" action="/supplier/delete/{{ s.id }}" onsubmit="return confirm('Delete {{ s.name|e }}?')" style="display:inline;">
+                    <button class="btn-sm btn-delete" type="submit"><i class="fas fa-trash"></i></button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    {% else %}
+    <div class="empty-state">
+        <div class="empty-icon"><i class="fas fa-truck"></i></div>
+        <h3>No Suppliers Yet</h3>
+        <p>Add your first supplier to start creating purchase orders.</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Add/Edit Modal -->
+<div class="modal-overlay" id="supplierModal">
+    <div class="modal-box">
+        <h3><i class="fas fa-truck"></i> <span id="modalTitle">Add Supplier</span></h3>
+        <form id="supplierForm" method="POST">
+            <input type="hidden" id="editId" name="edit_id" value="">
+            <div class="form-group">
+                <label>Supplier Name *</label>
+                <input type="text" name="name" id="sName" required placeholder="e.g. VapeTech Distributors">
+            </div>
+            <div class="form-group">
+                <label>Contact Person</label>
+                <input type="text" name="contact" id="sContact" placeholder="e.g. Juan Dela Cruz">
+            </div>
+            <div class="form-group">
+                <label>Phone</label>
+                <input type="text" name="phone" id="sPhone" placeholder="e.g. 0917-123-4567">
+            </div>
+            <div class="form-group">
+                <label>Email</label>
+                <input type="email" name="email" id="sEmail" placeholder="e.g. orders@supplier.com">
+            </div>
+            <div class="form-group">
+                <label>Address</label>
+                <input type="text" name="address" id="sAddress" placeholder="e.g. 123 Main St, City">
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn-cancel" onclick="closeModal()">Cancel</button>
+                <button type="submit" class="btn-save"><i class="fas fa-check" style="margin-right:4px;"></i> Save Supplier</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openModal() {
+    document.getElementById('modalTitle').textContent = 'Add Supplier';
+    document.getElementById('editId').value = '';
+    document.getElementById('supplierForm').action = '/supplier/add';
+    document.getElementById('sName').value = '';
+    document.getElementById('sContact').value = '';
+    document.getElementById('sPhone').value = '';
+    document.getElementById('sEmail').value = '';
+    document.getElementById('sAddress').value = '';
+    document.getElementById('supplierModal').classList.add('active');
+}
+function openEditModal(id, name, contact, phone, email, address) {
+    document.getElementById('modalTitle').textContent = 'Edit Supplier';
+    document.getElementById('editId').value = id;
+    document.getElementById('supplierForm').action = '/supplier/edit/' + id;
+    document.getElementById('sName').value = name;
+    document.getElementById('sContact').value = contact;
+    document.getElementById('sPhone').value = phone;
+    document.getElementById('sEmail').value = email;
+    document.getElementById('sAddress').value = address;
+    document.getElementById('supplierModal').classList.add('active');
+}
+function closeModal() {
+    document.getElementById('supplierModal').classList.remove('active');
+}
+document.getElementById('supplierModal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+});
+
+// Search/Filter
+function filterSuppliers() {
+    const q = document.getElementById('searchInput').value.toLowerCase();
+    document.querySelectorAll('[data-search]').forEach(el => {
+        const match = el.dataset.search.includes(q);
+        el.style.display = match ? '' : 'none';
+        if (match) {
+            el.style.animation = 'fadeInUp 0.3s ease both';
+        }
+    });
+}
+
+// View Toggle
+function setView(mode) {
+    const grid = document.getElementById('gridView');
+    const list = document.getElementById('listView');
+    document.getElementById('gridViewBtn').classList.toggle('active', mode === 'grid');
+    document.getElementById('listViewBtn').classList.toggle('active', mode === 'list');
+    if (mode === 'grid') {
+        grid.style.display = '';
+        list.style.display = 'none';
+    } else {
+        grid.style.display = 'none';
+        list.style.display = '';
+    }
+}
+
+// Keyboard shortcut: Ctrl+K to focus search
+document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        document.getElementById('searchInput').focus();
+    }
+});
+</script>
+{% endblock %}
+"""
+
+# ──────────────────────────────────────────────────────────────────────
+# TEMPLATE: purchase_orders.html
+# ──────────────────────────────────────────────────────────────────────
+TEMPLATES["purchase_orders.html"] = """
+{% extends "base.html" %}
+{% block content %}
+<style>
+    :root { --brand:#705194; --brand-light:#f3eeff; --brand-dark:#5a3f7a; --green:#10b981; --green-light:#ecfdf5; --red:#ef4444; --red-light:#fef2f2; --orange:#f59e0b; --orange-light:#fffbeb; --blue:#3b82f6; --blue-light:#eff6ff; --navy:#162135; --radius:16px; --radius-sm:10px; --shadow:0 2px 10px rgba(112,81,148,.05); --shadow-lg:0 8px 30px rgba(112,81,148,.1); }
+
+    /* Animations */
+    @keyframes fadeInUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes slideInRight { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
+    @keyframes scaleIn { from { opacity:0; transform:scale(0.95); } to { opacity:1; transform:scale(1); } }
+    @keyframes shimmer { 0% { background-position:-200% 0; } 100% { background-position:200% 0; } }
+    @keyframes countUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes pulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.04); } }
+    @keyframes dotPulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+    .po-wrapper { max-width:960px; margin:0 auto; padding:10px; }
+
+    /* Header */
+    .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:12px; animation:fadeInUp 0.4s ease both; }
+    .page-header h2 { margin:0; font-size:1.2rem; font-weight:800; color:#1e293b; display:flex; align-items:center; gap:10px; }
+    .page-header h2 .icon-wrap { width:38px; height:38px; background:linear-gradient(135deg,var(--brand),var(--brand-dark)); border-radius:10px; display:flex; align-items:center; justify-content:center; color:white; font-size:0.9rem; box-shadow:0 4px 14px rgba(112,81,148,.3); }
+    .btn-add { background:linear-gradient(135deg,var(--brand),var(--brand-dark)); color:white; border:none; padding:10px 22px; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.82rem; display:flex; align-items:center; gap:7px; transition:all 0.25s ease; box-shadow:0 4px 14px rgba(112,81,148,.25); text-decoration:none; position:relative; overflow:hidden; }
+    .btn-add:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(112,81,148,.35); }
+    .btn-add:active { transform:translateY(0) scale(0.97); }
+    .btn-add::after { content:''; position:absolute; inset:0; background:linear-gradient(90deg,transparent,rgba(255,255,255,.15),transparent); background-size:200% 100%; animation:shimmer 3s infinite; }
+
+    /* Stats Row */
+    .stats-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:20px; }
+    .stat-card { background:white; border:1.5px solid #e8e4f0; border-radius:var(--radius); padding:16px 18px; box-shadow:var(--shadow); position:relative; overflow:hidden; transition:all 0.3s ease; cursor:pointer; }
+    .stat-card:hover { transform:translateY(-2px); box-shadow:var(--shadow-lg); }
+    .stat-card.active { border-color:var(--brand); background:var(--brand-light); }
+    .stat-card .stat-icon { width:36px; height:36px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:0.85rem; margin-bottom:10px; }
+    .stat-card .stat-icon.purple { background:var(--brand-light); color:var(--brand); }
+    .stat-card .stat-icon.green { background:var(--green-light); color:var(--green); }
+    .stat-card .stat-icon.blue { background:var(--blue-light); color:var(--blue); }
+    .stat-card .stat-icon.orange { background:var(--orange-light); color:var(--orange); }
+    .stat-card .stat-label { font-size:0.62rem; font-weight:800; text-transform:uppercase; color:#94a3b8; letter-spacing:0.6px; margin-bottom:4px; }
+    .stat-card .stat-value { font-size:1.3rem; font-weight:900; color:#1e293b; animation:countUp 0.5s ease both; }
+    .stat-card .stat-dot { width:7px; height:7px; border-radius:50%; position:absolute; top:14px; right:14px; }
+    .stat-card .stat-dot.purple { background:var(--brand); animation:dotPulse 2s infinite; }
+    .stat-card .stat-dot.green { background:var(--green); animation:dotPulse 2s infinite 0.3s; }
+    .stat-card .stat-dot.blue { background:var(--blue); animation:dotPulse 2s infinite 0.6s; }
+    .stat-card .stat-dot.orange { background:var(--orange); animation:dotPulse 2s infinite 0.9s; }
+
+    /* Toolbar */
+    .toolbar { display:flex; gap:10px; margin-bottom:16px; align-items:center; flex-wrap:wrap; animation:fadeInUp 0.4s ease 0.1s both; }
+    .search-box { flex:1; min-width:200px; position:relative; }
+    .search-box i { position:absolute; left:12px; top:50%; transform:translateY(-50%); color:#94a3b8; font-size:0.8rem; }
+    .search-box input { width:100%; padding:10px 12px 10px 36px; border:1.5px solid #e8e4f0; border-radius:var(--radius-sm); font-size:0.82rem; transition:all 0.25s ease; box-sizing:border-box; background:white; }
+    .search-box input:focus { outline:none; border-color:var(--brand); box-shadow:0 0 0 3px rgba(112,81,148,.1); }
+    .filter-chips { display:flex; gap:6px; flex-wrap:wrap; }
+    .filter-chip { border:none; padding:7px 14px; border-radius:99px; font-size:0.72rem; font-weight:700; cursor:pointer; transition:all 0.2s ease; background:#f1f5f9; color:#64748b; }
+    .filter-chip:hover { background:#e2e8f0; }
+    .filter-chip.active { background:var(--brand); color:white; box-shadow:0 2px 10px rgba(112,81,148,.2); }
+
+    /* PO List */
+    .po-list { display:flex; flex-direction:column; gap:10px; }
+
+    .po-card { background:white; border:1.5px solid #e8e4f0; border-radius:var(--radius); padding:16px 20px; box-shadow:var(--shadow); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; transition:all 0.3s cubic-bezier(0.4,0,0.2,1); position:relative; overflow:hidden; }
+    .po-card:hover { border-color:rgba(112,81,148,.3); box-shadow:var(--shadow-lg); transform:translateY(-2px); }
+    .po-card::before { content:''; position:absolute; left:0; top:0; bottom:0; width:4px; transition:all 0.3s; }
+    .po-card[data-status=draft]::before { background:#94a3b8; }
+    .po-card[data-status=sent]::before { background:var(--blue); }
+    .po-card[data-status=received]::before { background:var(--green); }
+    .po-card[data-status=cancelled]::before { background:var(--red); }
+    .po-card:hover::before { width:5px; }
+    .po-card:nth-child(1) { animation:fadeInUp 0.4s ease 0.15s both; }
+    .po-card:nth-child(2) { animation:fadeInUp 0.4s ease 0.2s both; }
+    .po-card:nth-child(3) { animation:fadeInUp 0.4s ease 0.25s both; }
+    .po-card:nth-child(n+4) { animation:fadeInUp 0.4s ease 0.3s both; }
+
+    .po-info h4 { margin:0 0 6px; font-size:0.9rem; color:#1e293b; display:flex; align-items:center; gap:8px; }
+    .po-info .meta { font-size:0.72rem; color:#64748b; display:flex; gap:14px; flex-wrap:wrap; }
+    .po-info .meta span { display:flex; align-items:center; gap:5px; transition:color 0.2s; }
+    .po-info .meta span:hover { color:#1e293b; }
+
+    .status-badge { padding:4px 12px; border-radius:99px; font-size:0.62rem; font-weight:800; text-transform:uppercase; letter-spacing:0.5px; transition:all 0.2s; }
+    .status-draft { background:#f1f5f9; color:#475569; }
+    .status-sent { background:var(--blue-light); color:#2563eb; }
+    .status-received { background:var(--green-light); color:#059669; }
+    .status-cancelled { background:var(--red-light); color:#dc2626; }
+
+    .po-actions { display:flex; gap:6px; align-items:center; }
+    .btn-sm { border:none; padding:6px 12px; border-radius:7px; font-size:0.7rem; font-weight:700; cursor:pointer; display:flex; align-items:center; gap:4px; text-decoration:none; transition:all 0.2s ease; }
+    .btn-view { background:var(--brand-light); color:var(--brand); }
+    .btn-view:hover { background:var(--brand); color:white; transform:translateY(-1px); }
+    .btn-edit-sm { background:#f1f5f9; color:#475569; }
+    .btn-edit-sm:hover { background:#e2e8f0; transform:translateY(-1px); }
+    .btn-delete-sm { background:var(--red-light); color:var(--red); }
+    .btn-delete-sm:hover { background:#fecaca; transform:translateY(-1px); }
+    .btn-duplicate { background:var(--blue-light); color:var(--blue); }
+    .btn-duplicate:hover { background:#dbeafe; transform:translateY(-1px); }
+
+    /* Empty State */
+    .empty-state { text-align:center; padding:60px 20px; color:#94a3b8; animation:fadeInUp 0.5s ease both; }
+    .empty-state .empty-icon { width:80px; height:80px; background:var(--brand-light); border-radius:50%; display:flex; align-items:center; justify-content:center; margin:0 auto 16px; font-size:1.8rem; color:var(--brand); animation:pulse 2s ease infinite; }
+    .empty-state h3 { font-size:1rem; color:#475569; margin:0 0 6px; }
+    .empty-state p { font-size:0.82rem; margin:0; }
+
+    @media (max-width:600px) {
+        .stats-row { grid-template-columns:repeat(2,1fr); }
+        .po-card { flex-direction:column; align-items:flex-start; }
+        .po-actions { width:100%; justify-content:flex-end; }
+    }
+</style>
+
+<div class="po-wrapper">
+    <!-- Header -->
+    <div class="page-header">
+        <h2><span class="icon-wrap"><i class="fas fa-file-invoice"></i></span> Purchase Orders</h2>
+        <a href="/purchase_order/new" class="btn-add"><i class="fas fa-plus"></i> New Order</a>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-row">
+        <div class="stat-card" onclick="filterByStatus('all')" id="statAll">
+            <div class="stat-dot purple"></div>
+            <div class="stat-icon purple"><i class="fas fa-layer-group"></i></div>
+            <div class="stat-label">All Orders</div>
+            <div class="stat-value">{{ orders|length }}</div>
+        </div>
+        <div class="stat-card" onclick="filterByStatus('draft')" id="statDraft">
+            <div class="stat-dot orange"></div>
+            <div class="stat-icon orange"><i class="fas fa-file-pen"></i></div>
+            <div class="stat-label">Draft</div>
+            <div class="stat-value">{{ draft_count }}</div>
+        </div>
+        <div class="stat-card" onclick="filterByStatus('sent')" id="statSent">
+            <div class="stat-dot blue"></div>
+            <div class="stat-icon blue"><i class="fas fa-paper-plane"></i></div>
+            <div class="stat-label">Sent</div>
+            <div class="stat-value">{{ sent_count }}</div>
+        </div>
+        <div class="stat-card" onclick="filterByStatus('received')" id="statReceived">
+            <div class="stat-dot green"></div>
+            <div class="stat-icon green"><i class="fas fa-check-circle"></i></div>
+            <div class="stat-label">Received</div>
+            <div class="stat-value">{{ received_count }}</div>
+        </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+        <div class="search-box">
+            <i class="fas fa-search"></i>
+            <input type="text" id="searchInput" placeholder="Search by order #, supplier, or item..." oninput="filterOrders()">
+        </div>
+        <div class="filter-chips">
+            <button class="filter-chip active" data-filter="all" onclick="filterByStatus('all')">All</button>
+            <button class="filter-chip" data-filter="draft" onclick="filterByStatus('draft')"><i class="fas fa-file-pen" style="font-size:0.6rem;"></i> Draft</button>
+            <button class="filter-chip" data-filter="sent" onclick="filterByStatus('sent')"><i class="fas fa-paper-plane" style="font-size:0.6rem;"></i> Sent</button>
+            <button class="filter-chip" data-filter="received" onclick="filterByStatus('received')"><i class="fas fa-check-circle" style="font-size:0.6rem;"></i> Received</button>
+            <button class="filter-chip" data-filter="cancelled" onclick="filterByStatus('cancelled')"><i class="fas fa-times-circle" style="font-size:0.6rem;"></i> Cancelled</button>
+        </div>
+    </div>
+
+    {% if orders %}
+    <div class="po-list" id="poList">
+        {% for o in orders %}
+        <div class="po-card" data-status="{{ o.status }}" data-search="{{ o.order_number|lower }} {{ (o.supplier.name if o.supplier else '')|lower }} {% for i in o.items %}{{ i.product_name|lower }} {% endfor %}">
+            <div class="po-info">
+                <h4>{{ o.order_number }}
+                    <span class="status-badge status-{{ o.status }}">{{ o.status|upper }}</span>
+                </h4>
+                <div class="meta">
+                    <span><i class="fas fa-truck" style="color:var(--brand);"></i> {{ o.supplier.name if o.supplier else 'No Supplier' }}</span>
+                    <span><i class="fas fa-box" style="color:var(--orange);"></i> {{ o.items|length }} item(s)</span>
+                    <span><i class="fas fa-calendar" style="color:var(--blue);"></i> {{ o.date_created.strftime('%b %d, %Y') }}</span>
+                    <span style="font-weight:700;color:var(--green);"><i class="fas fa-coins"></i> ₱{{ "{:,.2f}".format(order_totals.get(o.id, 0)) }}</span>
+                </div>
+            </div>
+            <div class="po-actions">
+                <a href="/purchase_order/{{ o.id }}" class="btn-sm btn-view"><i class="fas fa-eye"></i> View</a>
+                {% if o.status == 'draft' %}
+                <a href="/purchase_order/{{ o.id }}/edit" class="btn-sm btn-edit-sm"><i class="fas fa-pen"></i> Edit</a>
+                <form method="POST" action="/purchase_order/{{ o.id }}/delete" onsubmit="return confirm('Delete {{ o.order_number }}?')" style="display:inline;">
+                    <button class="btn-sm btn-delete-sm" type="submit"><i class="fas fa-trash"></i></button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <div class="empty-icon"><i class="fas fa-file-invoice"></i></div>
+        <h3>No Purchase Orders</h3>
+        <p>Create your first purchase order to start tracking purchases.</p>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+let currentFilter = 'all';
+
+function filterByStatus(status) {
+    currentFilter = status;
+    // Update chips
+    document.querySelectorAll('.filter-chip').forEach(c => c.classList.toggle('active', c.dataset.filter === status));
+    // Update stat cards
+    document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('active'));
+    const statMap = {all:'statAll', draft:'statDraft', sent:'statSent', received:'statReceived'};
+    if (statMap[status]) document.getElementById(statMap[status]).classList.add('active');
+    applyFilters();
+}
+
+function filterOrders() {
+    applyFilters();
+}
+
+function applyFilters() {
+    const q = document.getElementById('searchInput').value.toLowerCase();
+    document.querySelectorAll('.po-card').forEach(card => {
+        const matchStatus = currentFilter === 'all' || card.dataset.status === currentFilter;
+        const matchSearch = !q || card.dataset.search.includes(q);
+        const show = matchStatus && matchSearch;
+        card.style.display = show ? '' : 'none';
+        if (show) card.style.animation = 'fadeInUp 0.3s ease both';
+    });
+}
+
+// Ctrl+K shortcut
+document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        document.getElementById('searchInput').focus();
+    }
+});
+</script>
+{% endblock %}
+"""
+
+# ──────────────────────────────────────────────────────────────────────
+# TEMPLATE: purchase_order_form.html (create / edit)
+# ──────────────────────────────────────────────────────────────────────
+TEMPLATES["purchase_order_form.html"] = """
+{% extends "base.html" %}
+{% block content %}
+<style>
+    :root { --brand:#705194; --brand-light:#f3eeff; --brand-dark:#5a3f7a; --green:#10b981; --green-light:#ecfdf5; --red:#ef4444; --red-light:#fef2f2; --orange:#f59e0b; --orange-light:#fffbeb; --blue:#3b82f6; --blue-light:#eff6ff; --navy:#162135; --radius:16px; --radius-sm:10px; --shadow:0 2px 10px rgba(112,81,148,.05); --shadow-lg:0 8px 30px rgba(112,81,148,.1); }
+
+    /* Animations */
+    @keyframes fadeInUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes scaleIn { from { opacity:0; transform:scale(0.95); } to { opacity:1; transform:scale(1); } }
+    @keyframes slideInRow { from { opacity:0; transform:translateX(-10px); } to { opacity:1; transform:translateX(0); } }
+    @keyframes shimmer { 0% { background-position:-200% 0; } 100% { background-position:200% 0; } }
+    @keyframes deleteRow { to { opacity:0; transform:translateX(20px); height:0; padding:0; margin:0; } }
+
+    .pof-wrapper { max-width:920px; margin:0 auto; padding:10px; }
+
+    /* Header */
+    .page-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:12px; animation:fadeInUp 0.4s ease both; }
+    .page-header h2 { margin:0; font-size:1.15rem; font-weight:800; color:#1e293b; display:flex; align-items:center; gap:10px; }
+    .page-header h2 .icon-wrap { width:36px; height:36px; background:linear-gradient(135deg,var(--brand),var(--brand-dark)); border-radius:10px; display:flex; align-items:center; justify-content:center; color:white; font-size:0.85rem; box-shadow:0 4px 14px rgba(112,81,148,.3); }
+    .btn-back { background:white; color:#475569; border:1.5px solid #e8e4f0; padding:8px 16px; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.8rem; text-decoration:none; display:flex; align-items:center; gap:6px; transition:all 0.25s; }
+    .btn-back:hover { border-color:var(--brand); color:var(--brand); transform:translateX(-2px); }
+
+    /* Form Cards */
+    .form-card { background:white; border:1.5px solid #e8e4f0; border-radius:var(--radius); padding:22px; box-shadow:var(--shadow); margin-bottom:16px; transition:all 0.3s ease; animation:fadeInUp 0.4s ease 0.1s both; }
+    .form-card:hover { box-shadow:var(--shadow-lg); }
+    .form-card:nth-child(2) { animation-delay:0.15s; }
+    .form-card h3 { margin:0 0 16px; font-size:0.82rem; font-weight:800; text-transform:uppercase; color:#475569; letter-spacing:0.5px; border-bottom:1px solid #f1f5f9; padding-bottom:12px; display:flex; align-items:center; gap:8px; }
+    .form-card h3 i { color:var(--brand); }
+    .form-row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+    .form-group { flex:1; min-width:200px; margin-bottom:0; }
+    .form-group label { display:block; font-size:0.68rem; font-weight:800; color:#475569; text-transform:uppercase; letter-spacing:0.4px; margin-bottom:5px; }
+    .form-group select, .form-group input, .form-group textarea { width:100%; padding:11px 14px; border:1.5px solid #e8e4f0; border-radius:var(--radius-sm); font-size:0.82rem; box-sizing:border-box; transition:all 0.25s ease; background:white; }
+    .form-group select:focus, .form-group input:focus, .form-group textarea:focus { outline:none; border-color:var(--brand); box-shadow:0 0 0 3px rgba(112,81,148,.1); }
+    .form-group textarea { resize:vertical; min-height:60px; }
+
+    /* Item table */
+    .items-section { animation:fadeInUp 0.4s ease 0.2s both; }
+    .item-table { width:100%; border-collapse:separate; border-spacing:0; margin-top:8px; }
+    .item-table th { background:#f8f7ff; text-align:left; padding:10px 12px; font-size:0.66rem; color:#475569; border-bottom:2px solid #e8e4f0; text-transform:uppercase; letter-spacing:0.4px; font-weight:800; }
+    .item-table td { padding:8px 10px; font-size:0.8rem; border-bottom:1px solid #f1f5f9; vertical-align:middle; }
+    .item-table tbody tr { transition:all 0.2s ease; animation:slideInRow 0.3s ease both; }
+    .item-table tbody tr:hover { background:#faf9ff; }
+    .item-table td input { width:100%; padding:8px 10px; border:1.5px solid #e8e4f0; border-radius:7px; font-size:0.8rem; box-sizing:border-box; transition:all 0.25s; background:white; }
+    .item-table td input:focus { outline:none; border-color:var(--brand); box-shadow:0 0 0 3px rgba(112,81,148,.1); }
+    .item-table td input[type=number] { text-align:center; }
+    .btn-remove-row { background:var(--red-light); color:var(--red); border:none; width:30px; height:30px; border-radius:8px; cursor:pointer; font-size:0.75rem; display:flex; align-items:center; justify-content:center; transition:all 0.2s; }
+    .btn-remove-row:hover { background:#fecaca; transform:scale(1.1); }
+    .btn-remove-row:active { transform:scale(0.95); }
+
+    .add-item-bar { display:flex; gap:8px; margin-top:14px; align-items:center; flex-wrap:wrap; }
+    .add-item-bar select { padding:9px 12px; border:1.5px solid #e8e4f0; border-radius:var(--radius-sm); font-size:0.82rem; min-width:240px; transition:all 0.25s; }
+    .add-item-bar select:focus { outline:none; border-color:var(--brand); }
+    .btn-add-item { background:var(--brand-light); color:var(--brand); border:none; padding:9px 16px; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.78rem; display:flex; align-items:center; gap:5px; transition:all 0.25s; }
+    .btn-add-item:hover { background:var(--brand); color:white; transform:translateY(-1px); }
+    .btn-add-custom { background:#f1f5f9; color:#475569; }
+    .btn-add-custom:hover { background:#e2e8f0; color:#334155; }
+
+    /* Summary Stats */
+    .summary-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin-top:14px; padding-top:14px; border-top:1px dashed #e8e4f0; }
+    .summary-item { text-align:center; }
+    .summary-item .s-label { font-size:0.6rem; font-weight:800; text-transform:uppercase; color:#94a3b8; letter-spacing:0.5px; }
+    .summary-item .s-value { font-size:0.9rem; font-weight:800; color:#1e293b; margin-top:2px; }
+
+    /* Total Bar */
+    .total-bar { background:linear-gradient(135deg,var(--brand-light),#f0ecff); border:1.5px solid rgba(112,81,148,.15); border-radius:var(--radius); padding:16px 22px; display:flex; justify-content:flex-end; align-items:center; gap:24px; margin-top:16px; transition:all 0.3s; }
+    .total-bar:hover { box-shadow:0 4px 16px rgba(112,81,148,.1); }
+    .total-bar label { font-size:0.68rem; font-weight:800; text-transform:uppercase; color:#64748b; letter-spacing:0.5px; }
+    .total-bar .total-value { font-size:1.4rem; font-weight:900; color:var(--brand); transition:all 0.3s; }
+
+    /* Action Buttons */
+    .form-actions { display:flex; gap:10px; justify-content:flex-end; margin-top:20px; animation:fadeInUp 0.4s ease 0.3s both; }
+    .btn-cancel { background:white; color:#475569; border:1.5px solid #e8e4f0; padding:12px 24px; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.85rem; transition:all 0.25s; }
+    .btn-cancel:hover { border-color:#cbd5e1; background:#f8fafc; }
+    .btn-submit { background:linear-gradient(135deg,var(--brand),var(--brand-dark)); color:white; border:none; padding:12px 28px; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.85rem; display:flex; align-items:center; gap:7px; transition:all 0.25s; box-shadow:0 4px 14px rgba(112,81,148,.25); position:relative; overflow:hidden; }
+    .btn-submit:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(112,81,148,.35); }
+    .btn-submit:active { transform:translateY(0) scale(0.97); }
+    .btn-submit::after { content:''; position:absolute; inset:0; background:linear-gradient(90deg,transparent,rgba(255,255,255,.12),transparent); background-size:200% 100%; animation:shimmer 3s infinite; }
+
+    /* No items placeholder */
+    .no-items { text-align:center; padding:30px 20px; color:#94a3b8; font-size:0.82rem; }
+    .no-items i { font-size:1.8rem; opacity:0.3; margin-bottom:8px; display:block; }
+
+    @media (max-width:600px) {
+        .form-card { padding:16px; }
+        .add-item-bar { flex-direction:column; }
+        .add-item-bar select { min-width:100%; }
+    }
+</style>
+
+<div class="pof-wrapper">
+    <div class="page-header">
+        <h2><span class="icon-wrap"><i class="fas fa-file-pen"></i></span> {% if order %}Edit {{ order.order_number }}{% else %}New Purchase Order{% endif %}</h2>
+        <a href="/purchase_orders" class="btn-back"><i class="fas fa-arrow-left"></i> Back to Orders</a>
+    </div>
+
+    <form id="poForm" method="POST" action="{% if order %}/purchase_order/{{ order.id }}/update{% else %}/purchase_order/create{% endif %}">
+        <!-- Order Details -->
+        <div class="form-card">
+            <h3><i class="fas fa-info-circle"></i> Order Details</h3>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Supplier / Destination *</label>
+                    <select name="supplier_id" id="supplierSelect">
+                        <option value="">-- Select Supplier --</option>
+                        {% for s in suppliers %}
+                        <option value="{{ s.id }}" {% if order and order.supplier_id == s.id %}selected{% endif %}>{{ s.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Notes</label>
+                    <textarea name="notes" rows="2" placeholder="Optional notes for this order...">{{ order.notes if order else '' }}</textarea>
+                </div>
+            </div>
+        </div>
+
+        <!-- Items -->
+        <div class="form-card items-section">
+            <h3><i class="fas fa-boxes-stacked"></i> Order Items <span id="itemCount" style="margin-left:auto;font-size:0.7rem;color:var(--brand);font-weight:700;"></span></h3>
+
+            <!-- Quick add from product catalog -->
+            <div class="add-item-bar">
+                <select id="productSelect">
+                    <option value="">-- Add from product catalog --</option>
+                    {% for p in products %}
+                    <option value="{{ p.id }}" data-name="{{ p.name }}" data-flavor="{{ p.flavor or '' }}" data-category="{{ p.type or '' }}" data-cost="{{ p.cost or 0 }}" data-qty="{{ p.qty or 0 }}">{{ p.name }} {% if p.flavor %}({{ p.flavor }}){% endif %} — Stock: {{ p.qty or 0 }}</option>
+                    {% endfor %}
+                </select>
+                <button type="button" class="btn-add-item" onclick="addFromCatalog()"><i class="fas fa-plus"></i> Add Product</button>
+                <button type="button" class="btn-add-item btn-add-custom" onclick="addCustomRow()"><i class="fas fa-pen"></i> Custom Item</button>
+            </div>
+
+            <div style="overflow-x:auto;margin-top:12px;">
+                <table class="item-table" id="itemsTable">
+                    <thead>
+                        <tr>
+                            <th style="width:35px;">#</th>
+                            <th>Product Name</th>
+                            <th>Flavor</th>
+                            <th>Category</th>
+                            <th style="width:90px;text-align:center;">Qty</th>
+                            <th style="width:115px;text-align:right;">Unit Cost</th>
+                            <th style="width:115px;text-align:right;">Line Total</th>
+                            <th style="width:40px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="itemsBody">
+                    </tbody>
+                </table>
+                <div class="no-items" id="noItemsMsg"><i class="fas fa-box-open"></i>No items added yet. Use the catalog above or add a custom item.</div>
+            </div>
+
+            <!-- Inline Summary -->
+            <div class="summary-row" id="summaryRow" style="display:none;">
+                <div class="summary-item">
+                    <div class="s-label">Total Items</div>
+                    <div class="s-value" id="summaryItems">0</div>
+                </div>
+                <div class="summary-item">
+                    <div class="s-label">Total Qty</div>
+                    <div class="s-value" id="summaryQty">0</div>
+                </div>
+                <div class="summary-item">
+                    <div class="s-label">Avg Unit Cost</div>
+                    <div class="s-value" id="summaryAvg">₱0.00</div>
+                </div>
+            </div>
+
+            <div class="total-bar">
+                <label>Estimated Total Cost</label>
+                <div class="total-value" id="grandTotal">₱0.00</div>
+            </div>
+        </div>
+
+        <input type="hidden" name="items" id="itemsInput">
+
+        <div class="form-actions">
+            <button type="button" class="btn-cancel" onclick="window.location='/purchase_orders'">Cancel</button>
+            <button type="submit" class="btn-submit" onclick="prepareSubmit()"><i class="fas fa-save"></i> {% if order %}Update Order{% else %}Save as Draft{% endif %}</button>
+        </div>
+    </form>
+</div>
+
+<script>
+let rowCounter = 0;
+const existingItems = {{ order_items | tojson }};
+
+// Load existing items on edit
+if (existingItems && existingItems.length > 0) {
+    existingItems.forEach(item => {
+        addRow(item.product_id, item.product_name, item.flavor, item.category, item.qty_ordered, item.unit_cost);
+    });
+}
+
+function addRow(productId, name, flavor, category, qty, cost) {
+    rowCounter++;
+    const tbody = document.getElementById('itemsBody');
+    const tr = document.createElement('tr');
+    tr.dataset.row = rowCounter;
+    tr.innerHTML = `
+        <td style="text-align:center;color:#94a3b8;font-size:0.7rem;font-weight:700;">${rowCounter}</td>
+        <td><input type="text" name="product_name" value="${name || ''}" placeholder="Item name" required></td>
+        <td><input type="text" name="flavor" value="${flavor || ''}" placeholder="Flavor"></td>
+        <td><input type="text" name="category" value="${category || ''}" placeholder="Category"></td>
+        <td><input type="number" name="qty_ordered" value="${qty || 1}" min="1" oninput="recalcTotal()" onclick="this.select()" style="text-align:center;"></td>
+        <td><input type="number" name="unit_cost" value="${cost || 0}" min="0" step="0.01" oninput="recalcTotal()" onclick="this.select()" style="text-align:right;"></td>
+        <td style="text-align:right;font-weight:700;color:var(--brand);" class="line-total">₱${((qty || 1) * (cost || 0)).toFixed(2)}</td>
+        <td><button type="button" class="btn-remove-row" onclick="removeRow(this)"><i class="fas fa-times"></i></button></td>
+    `;
+    tr.dataset.productId = productId || '';
+    tbody.appendChild(tr);
+    updateNoItems();
+    recalcTotal();
+}
+
+function removeRow(btn) {
+    const tr = btn.closest('tr');
+    tr.style.animation = 'deleteRow 0.3s ease forwards';
+    setTimeout(() => {
+        tr.remove();
+        renumberRows();
+        updateNoItems();
+        recalcTotal();
+    }, 280);
+}
+
+function addFromCatalog() {
+    const sel = document.getElementById('productSelect');
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt.value) return;
+    addRow(
+        opt.value,
+        opt.dataset.name,
+        opt.dataset.flavor,
+        opt.dataset.category,
+        1,
+        parseFloat(opt.dataset.cost) || 0
+    );
+    sel.selectedIndex = 0;
+}
+
+function addCustomRow() {
+    addRow('', '', '', '', 1, 0);
+}
+
+function renumberRows() {
+    let i = 1;
+    document.querySelectorAll('#itemsBody tr').forEach(tr => {
+        tr.querySelector('td').textContent = i++;
+    });
+}
+
+function updateNoItems() {
+    const hasItems = document.querySelectorAll('#itemsBody tr').length > 0;
+    document.getElementById('noItemsMsg').style.display = hasItems ? 'none' : '';
+    document.getElementById('summaryRow').style.display = hasItems ? '' : 'none';
+    document.getElementById('itemCount').textContent = hasItems ? document.querySelectorAll('#itemsBody tr').length + ' item(s)' : '';
+}
+
+function recalcTotal() {
+    let grand = 0, totalQty = 0, costSum = 0, count = 0;
+    document.querySelectorAll('#itemsBody tr').forEach(tr => {
+        const qty = parseFloat(tr.querySelector('input[name=qty_ordered]').value) || 0;
+        const cost = parseFloat(tr.querySelector('input[name=unit_cost]').value) || 0;
+        const lineTotal = qty * cost;
+        tr.querySelector('.line-total').textContent = '₱' + lineTotal.toFixed(2);
+        grand += lineTotal;
+        totalQty += qty;
+        if (cost > 0) { costSum += cost; count++; }
+    });
+    const el = document.getElementById('grandTotal');
+    el.textContent = '₱' + grand.toFixed(2);
+    el.style.transform = 'scale(1.05)';
+    setTimeout(() => el.style.transform = '', 200);
+    document.getElementById('summaryItems').textContent = count || document.querySelectorAll('#itemsBody tr').length;
+    document.getElementById('summaryQty').textContent = totalQty;
+    document.getElementById('summaryAvg').textContent = count > 0 ? '₱' + (costSum/count).toFixed(2) : '₱0.00';
+}
+
+function prepareSubmit() {
+    const items = [];
+    document.querySelectorAll('#itemsBody tr').forEach(tr => {
+        items.push({
+            product_id: tr.dataset.productId || null,
+            product_name: tr.querySelector('input[name=product_name]').value,
+            flavor: tr.querySelector('input[name=flavor]').value,
+            category: tr.querySelector('input[name=category]').value,
+            qty_ordered: parseInt(tr.querySelector('input[name=qty_ordered]').value) || 0,
+            unit_cost: parseFloat(tr.querySelector('input[name=unit_cost]').value) || 0,
+        });
+    });
+    document.getElementById('itemsInput').value = JSON.stringify(items);
+}
+</script>
+{% endblock %}
+"""
+
+# ──────────────────────────────────────────────────────────────────────
+# TEMPLATE: purchase_order_detail.html
+# ──────────────────────────────────────────────────────────────────────
+TEMPLATES["purchase_order_detail.html"] = """
+{% extends "base.html" %}
+{% block content %}
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+<style>
+    :root { --brand:#705194; --brand-light:#f3eeff; --brand-dark:#5a3f7a; --green:#10b981; --green-light:#ecfdf5; --red:#ef4444; --red-light:#fef2f2; --orange:#f59e0b; --orange-light:#fffbeb; --blue:#3b82f6; --blue-light:#eff6ff; --navy:#162135; --radius:16px; --radius-sm:10px; --shadow:0 2px 10px rgba(112,81,148,.05); --shadow-lg:0 8px 30px rgba(112,81,148,.1); }
+
+    /* Animations */
+    @keyframes fadeInUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes scaleIn { from { opacity:0; transform:scale(0.95); } to { opacity:1; transform:scale(1); } }
+    @keyframes shimmer { 0% { background-position:-200% 0; } 100% { background-position:200% 0; } }
+    @keyframes pulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.04); } }
+    @keyframes slideRight { from { opacity:0; transform:translateX(-10px); } to { opacity:1; transform:translateX(0); } }
+    @keyframes statusPulse { 0%,100% { box-shadow:0 0 0 0 rgba(112,81,148,.3); } 50% { box-shadow:0 0 0 6px rgba(112,81,148,0); } }
+
+    .pod-wrapper { max-width:920px; margin:0 auto; padding:10px; }
+
+    /* Controls */
+    .pod-controls { display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; flex-wrap:wrap; gap:10px; animation:fadeInUp 0.4s ease both; }
+    .btn-back { background:white; color:#475569; border:1.5px solid #e8e4f0; padding:9px 18px; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.82rem; text-decoration:none; display:flex; align-items:center; gap:7px; transition:all 0.25s; }
+    .btn-back:hover { border-color:var(--brand); color:var(--brand); transform:translateX(-2px); }
+    .btn-group { display:flex; gap:7px; flex-wrap:wrap; }
+    .btn-action { border:none; padding:9px 18px; border-radius:var(--radius-sm); font-weight:700; cursor:pointer; font-size:0.78rem; display:flex; align-items:center; gap:6px; color:white; transition:all 0.25s ease; position:relative; overflow:hidden; }
+    .btn-action::after { content:''; position:absolute; inset:0; background:linear-gradient(90deg,transparent,rgba(255,255,255,.1),transparent); background-size:200% 100%; }
+    .btn-action:hover { transform:translateY(-2px); box-shadow:0 4px 14px rgba(0,0,0,.15); }
+    .btn-action:active { transform:translateY(0) scale(0.97); }
+    .btn-send { background:linear-gradient(135deg,var(--blue),#1d4ed8); }
+    .btn-receive { background:linear-gradient(135deg,var(--green),#059669); }
+    .btn-cancel-action { background:linear-gradient(135deg,var(--red),#dc2626); }
+    .btn-edit { background:linear-gradient(135deg,var(--orange),#d97706); }
+    .btn-print { background:linear-gradient(135deg,#475569,var(--navy)); }
+    .btn-img { background:linear-gradient(135deg,var(--brand),var(--brand-dark)); }
+    .btn-duplicate { background:linear-gradient(135deg,#64748b,#475569); }
+
+    /* Status Timeline */
+    .status-timeline { display:flex; align-items:center; gap:0; margin-bottom:20px; padding:16px 20px; background:white; border:1.5px solid #e8e4f0; border-radius:var(--radius); box-shadow:var(--shadow); animation:fadeInUp 0.4s ease 0.1s both; }
+    .status-step { display:flex; align-items:center; gap:8px; flex:1; position:relative; }
+    .status-step .step-dot { width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:0.65rem; background:#f1f5f9; color:#94a3b8; transition:all 0.3s; }
+    .status-step .step-dot.completed { background:var(--green); color:white; animation:statusPulse 2s infinite; }
+    .status-step .step-dot.current { background:var(--brand); color:white; animation:statusPulse 2s infinite; }
+    .status-step .step-label { font-size:0.62rem; font-weight:800; text-transform:uppercase; color:#94a3b8; letter-spacing:0.5px; }
+    .status-step .step-label.completed { color:var(--green); }
+    .status-step .step-label.current { color:var(--brand); }
+    .status-step .step-connector { flex:1; height:2px; background:#e2e8f0; margin:0 8px; transition:all 0.3s; }
+    .status-step .step-connector.completed { background:var(--green); }
+
+    /* Document */
+    #capture-area { background:white; border:1.5px solid #e8e4f0; border-radius:var(--radius); padding:5vw; position:relative; animation:fadeInUp 0.4s ease 0.15s both; }
+    .doc-header { text-align:center; border-bottom:2px solid var(--navy); padding-bottom:20px; margin-bottom:26px; }
+    .doc-header h2 { margin:0; font-size:clamp(1rem,4vw,1.4rem); font-weight:800; letter-spacing:1px; color:var(--navy); }
+    .doc-header .sub { font-size:0.75rem; color:#64748b; margin-top:5px; }
+    .doc-header .po-number { font-size:0.95rem; font-weight:800; color:var(--brand); margin-top:10px; display:flex; align-items:center; justify-content:center; gap:8px; }
+    .doc-header .po-date { font-size:0.72rem; color:#94a3b8; margin-top:3px; }
+
+    .status-badge { padding:5px 14px; border-radius:99px; font-size:0.62rem; font-weight:800; text-transform:uppercase; letter-spacing:0.5px; display:inline-flex; align-items:center; gap:4px; }
+    .status-draft { background:#f1f5f9; color:#475569; }
+    .status-sent { background:var(--blue-light); color:#2563eb; }
+    .status-received { background:var(--green-light); color:#059669; }
+    .status-cancelled { background:var(--red-light); color:#dc2626; }
+
+    /* Supplier Box */
+    .supplier-box { background:linear-gradient(135deg,var(--brand-light),#f0ecff); border:1px solid rgba(112,81,148,.12); border-radius:var(--radius); padding:16px 20px; margin-bottom:22px; transition:all 0.3s; }
+    .supplier-box:hover { box-shadow:0 4px 16px rgba(112,81,148,.08); }
+    .supplier-box h4 { margin:0 0 6px; font-size:0.78rem; font-weight:800; text-transform:uppercase; color:#475569; letter-spacing:0.5px; display:flex; align-items:center; gap:6px; }
+    .supplier-box h4 i { color:var(--brand); }
+    .supplier-box .detail { font-size:0.78rem; color:#1e293b; margin:3px 0; display:flex; align-items:center; gap:6px; }
+    .supplier-box .detail i { color:var(--brand); font-size:0.7rem; width:14px; }
+
+    /* Item Table */
+    .item-table { width:100%; border-collapse:separate; border-spacing:0; margin-bottom:16px; }
+    .item-table th { background:#f8f7ff; text-align:left; padding:11px 14px; font-size:0.66rem; color:#475569; border-bottom:2px solid #e8e4f0; text-transform:uppercase; letter-spacing:0.4px; font-weight:800; }
+    .item-table td { padding:11px 14px; font-size:0.8rem; border-bottom:1px solid #f1f5f9; vertical-align:middle; transition:all 0.2s; }
+    .item-table tbody tr { animation:slideRight 0.3s ease both; }
+    .item-table tbody tr:hover { background:#faf9ff; }
+    .item-table tbody tr:nth-child(even) { background:#fafafa; }
+    .item-table tbody tr:nth-child(even):hover { background:#faf9ff; }
+
+    .total-row { background:linear-gradient(135deg,var(--brand-light),#f0ecff) !important; font-weight:800; }
+    .total-row td { font-size:0.85rem !important; border-bottom:none !important; }
+
+    .notes-box { background:#fafafa; border:1px solid #e8e4f0; border-radius:var(--radius-sm); padding:14px 16px; margin-top:14px; font-size:0.78rem; color:#475569; }
+    .notes-box strong { display:block; margin-bottom:5px; font-size:0.66rem; text-transform:uppercase; color:#94a3b8; letter-spacing:0.5px; }
+
+    .doc-footer { margin-top:26px; padding-top:14px; border-top:1px solid #e8e4f0; font-size:0.65rem; color:#94a3b8; text-align:center; }
+
+    /* Editable qty */
+    .editable-qty { display:inline-flex; align-items:center; gap:5px; }
+    .editable-qty input { width:58px; padding:5px 7px; border:1.5px solid #e8e4f0; border-radius:7px; text-align:center; font-size:0.8rem; font-weight:700; transition:all 0.25s; }
+    .editable-qty input:focus { outline:none; border-color:var(--brand); box-shadow:0 0 0 3px rgba(112,81,148,.1); }
+    .qty-display { font-weight:800; color:var(--green); }
+    .btn-qty-save { background:linear-gradient(135deg,var(--green),#059669); color:white; border:none; padding:4px 10px; border-radius:6px; cursor:pointer; font-size:0.62rem; font-weight:800; transition:all 0.2s; }
+    .btn-qty-save:hover { transform:translateY(-1px); box-shadow:0 2px 8px rgba(16,185,129,.3); }
+
+    /* Quick summary cards under timeline */
+    .detail-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:20px; animation:fadeInUp 0.4s ease 0.12s both; }
+    .d-stat { background:white; border:1.5px solid #e8e4f0; border-radius:var(--radius-sm); padding:12px 14px; text-align:center; box-shadow:var(--shadow); transition:all 0.2s; }
+    .d-stat:hover { transform:translateY(-2px); box-shadow:var(--shadow-lg); }
+    .d-stat .d-label { font-size:0.58rem; font-weight:800; text-transform:uppercase; color:#94a3b8; letter-spacing:0.5px; }
+    .d-stat .d-value { font-size:1.1rem; font-weight:900; color:#1e293b; margin-top:2px; }
+
+    @media print {
+        body * { visibility:hidden !important; }
+        #capture-area, #capture-area * { visibility:visible !important; }
+        #capture-area { position:fixed; top:0; left:0; width:100vw; padding:28px 32px; border:none; box-shadow:none; background:white; }
+        .pod-controls, .status-timeline, .detail-stats { display:none !important; }
+        .btn-qty-save { display:none !important; }
+        .editable-qty input { border:none; background:transparent; }
+    }
+
+    @media (max-width:600px) {
+        .status-timeline { flex-wrap:wrap; gap:8px; }
+        .status-step .step-connector { display:none; }
+        .detail-stats { grid-template-columns:repeat(2,1fr); }
+    }
+</style>
+
+<div class="pod-wrapper">
+    <div class="pod-controls no-print">
+        <a href="/purchase_orders" class="btn-back"><i class="fas fa-arrow-left"></i> All Orders</a>
+        <div class="btn-group">
+            {% if order.status == 'draft' %}
+            <a href="/purchase_order/{{ order.id }}/edit" class="btn-action btn-edit"><i class="fas fa-pen"></i> Edit</a>
+            <form method="POST" action="/purchase_order/{{ order.id }}/status" style="display:inline;">
+                <input type="hidden" name="status" value="sent">
+                <button type="submit" class="btn-action btn-send"><i class="fas fa-paper-plane"></i> Send to Supplier</button>
+            </form>
+            <form method="POST" action="/purchase_order/{{ order.id }}/delete" onsubmit="return confirm('Cancel this order?')" style="display:inline;">
+                <button type="submit" class="btn-action btn-cancel-action"><i class="fas fa-times"></i> Cancel</button>
+            </form>
+            {% elif order.status == 'sent' %}
+            <form method="POST" action="/purchase_order/{{ order.id }}/status" style="display:inline;">
+                <input type="hidden" name="status" value="received">
+                <button type="submit" class="btn-action btn-receive"><i class="fas fa-check"></i> Mark Received</button>
+            </form>
+            <form method="POST" action="/purchase_order/{{ order.id }}/status" style="display:inline;">
+                <input type="hidden" name="status" value="cancelled">
+                <button type="submit" class="btn-action btn-cancel-action"><i class="fas fa-times"></i> Cancel</button>
+            </form>
+            {% endif %}
+            <button onclick="window.print()" class="btn-action btn-print"><i class="fas fa-print"></i> Print</button>
+            <button onclick="downloadPO()" class="btn-action btn-img"><i class="fas fa-image"></i> Image</button>
+        </div>
+    </div>
+
+    <!-- Status Timeline -->
+    <div class="status-timeline no-print">
+        <div class="status-step">
+            <div class="step-dot {% if order.status != 'cancelled' %}completed{% endif %}" style="{% if order.status == 'cancelled' %}background:var(--red);color:white{% endif %};">
+                <i class="fas fa-file-pen"></i>
+            </div>
+            <div class="step-label {% if order.status != 'cancelled' %}completed{% endif %}" style="{% if order.status == 'cancelled' %}color:var(--red){% endif %};">Draft</div>
+            <div class="step-connector {% if order.status in ['sent','received'] %}completed{% endif %}"></div>
+        </div>
+        <div class="status-step">
+            <div class="step-dot {% if order.status == 'sent' %}current{% elif order.status == 'received' %}completed{% elif order.status == 'cancelled' %}{% else %}{% endif %}" style="{% if order.status == 'cancelled' %}background:var(--red);color:white{% endif %};">
+                <i class="fas fa-paper-plane"></i>
+            </div>
+            <div class="step-label {% if order.status == 'sent' %}current{% elif order.status == 'received' %}completed{% endif %}" style="{% if order.status == 'cancelled' %}color:var(--red){% endif %};">Sent</div>
+            <div class="step-connector {% if order.status == 'received' %}completed{% endif %}"></div>
+        </div>
+        <div class="status-step">
+            <div class="step-dot {% if order.status == 'received' %}current{% endif %}" style="{% if order.status == 'cancelled' %}background:var(--red);color:white{% endif %};">
+                <i class="fas fa-check"></i>
+            </div>
+            <div class="step-label {% if order.status == 'received' %}current{% endif %}" style="{% if order.status == 'cancelled' %}color:var(--red){% endif %};">Received</div>
+        </div>
+    </div>
+
+    <!-- Quick Stats -->
+    <div class="detail-stats no-print">
+        {% set tc = namespace(val=0.0) %}
+        {% set tq = namespace(val=0) %}
+        {% for item in order.items %}
+        {% set _ = tc.__setattr__('val', tc.val + (item.qty_ordered * item.unit_cost)) %}
+        {% set _ = tq.__setattr__('val', tq.val + item.qty_ordered) %}
+        {% endfor %}
+        <div class="d-stat">
+            <div class="d-label">Items</div>
+            <div class="d-value">{{ order.items|length }}</div>
+        </div>
+        <div class="d-stat">
+            <div class="d-label">Total Qty</div>
+            <div class="d-value">{{ tq.val }}</div>
+        </div>
+        <div class="d-stat">
+            <div class="d-label">Total Cost</div>
+            <div class="d-value" style="color:var(--brand);">₱{{ "{:,.2f}".format(tc.val) }}</div>
+        </div>
+        <div class="d-stat">
+            <div class="d-label">Status</div>
+            <div class="d-value"><span class="status-badge status-{{ order.status }}">{{ order.status|upper }}</span></div>
+        </div>
+    </div>
+
+    <div id="capture-area">
+        <div class="doc-header">
+            <h2>F.L.E.X VAPE SHOP</h2>
+            <div class="sub">Inventory Management System</div>
+            <div class="po-number">{{ order.order_number }}
+                <span class="status-badge status-{{ order.status }}"><i class="fas fa-circle" style="font-size:0.4rem;"></i> {{ order.status|upper }}</span>
+            </div>
+            <div class="po-date">Created: {{ order.date_created.strftime('%B %d, %Y %I:%M %p') }}</div>
+            {% if order.date_updated and order.date_updated != order.date_created %}
+            <div class="po-date">Updated: {{ order.date_updated.strftime('%B %d, %Y %I:%M %p') }}</div>
+            {% endif %}
+        </div>
+
+        <!-- Supplier / Destination -->
+        <div class="supplier-box">
+            <h4><i class="fas fa-truck"></i> Supplier / Destination</h4>
+            {% if order.supplier %}
+            <div class="detail"><strong>{{ order.supplier.name }}</strong></div>
+            {% if order.supplier.contact %}<div class="detail"><i class="fas fa-user"></i>{{ order.supplier.contact }}</div>{% endif %}
+            {% if order.supplier.phone %}<div class="detail"><i class="fas fa-phone"></i>{{ order.supplier.phone }}</div>{% endif %}
+            {% if order.supplier.email %}<div class="detail"><i class="fas fa-envelope"></i>{{ order.supplier.email }}</div>{% endif %}
+            {% if order.supplier.address %}<div class="detail"><i class="fas fa-map-marker-alt"></i>{{ order.supplier.address }}</div>{% endif %}
+            {% else %}
+            <div class="detail" style="color:#94a3b8;">No supplier assigned</div>
+            {% endif %}
+        </div>
+
+        <!-- Items -->
+        <table class="item-table">
+            <thead>
+                <tr>
+                    <th style="width:35px;">#</th>
+                    <th>Product Name</th>
+                    <th>Flavor</th>
+                    <th>Category</th>
+                    <th style="text-align:center;">Quantity</th>
+                    <th style="text-align:right;">Unit Cost</th>
+                    <th style="text-align:right;">Line Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% set total_cost = namespace(val=0.0) %}
+                {% set total_qty = namespace(val=0) %}
+                {% for item in order.items %}
+                <tr>
+                    <td style="text-align:center;color:#94a3b8;font-weight:700;">{{ loop.index }}</td>
+                    <td><strong>{{ item.product_name }}</strong></td>
+                    <td style="color:#64748b;">{{ item.flavor or '\u2014' }}</td>
+                    <td style="color:#64748b;text-transform:capitalize;">{{ item.category or '\u2014' }}</td>
+                    <td style="text-align:center;">
+                        {% if order.status == 'draft' %}
+                        <div class="editable-qty">
+                            <input type="number" value="{{ item.qty_ordered }}" min="1" data-item-id="{{ item.id }}" onchange="updateQty({{ item.id }}, this.value)">
+                            <button class="btn-qty-save" onclick="saveQty({{ item.id }})"><i class="fas fa-check"></i></button>
+                        </div>
+                        {% else %}
+                        <span class="qty-display">{{ item.qty_ordered }}</span>
+                        {% endif %}
+                    </td>
+                    <td style="text-align:right;">₱{{ "{:,.2f}".format(item.unit_cost) }}</td>
+                    <td style="text-align:right;font-weight:700;color:var(--brand);">₱{{ "{:,.2f}".format(item.qty_ordered * item.unit_cost) }}</td>
+                </tr>
+                {% set _ = total_cost.__setattr__('val', total_cost.val + (item.qty_ordered * item.unit_cost)) %}
+                {% set _ = total_qty.__setattr__('val', total_qty.val + item.qty_ordered) %}
+                {% endfor %}
+                <tr class="total-row">
+                    <td colspan="4" style="text-align:right;">TOTAL</td>
+                    <td style="text-align:center;">{{ total_qty.val }}</td>
+                    <td></td>
+                    <td style="text-align:right;">₱{{ "{:,.2f}".format(total_cost.val) }}</td>
+                </tr>
+            </tbody>
+        </table>
+
+        {% if order.notes %}
+        <div class="notes-box">
+            <strong><i class="fas fa-sticky-note" style="margin-right:4px;"></i> Notes</strong>
+            {{ order.notes }}
+        </div>
+        {% endif %}
+
+        <div class="doc-footer">
+            <span>F.L.E.X System &bull; Purchase Order &bull; {{ order.order_number }}</span>
+        </div>
+    </div>
+</div>
+
+<script>
+function updateQty(itemId, newQty) {
+    window['_pending_qty_' + itemId] = parseInt(newQty) || 0;
+}
+function saveQty(itemId) {
+    const newQty = window['_pending_qty_' + itemId];
+    if (newQty === undefined) return;
+    const btn = event.target.closest('.btn-qty-save');
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    btn.disabled = true;
+    fetch('/api/purchase_order_item/' + itemId + '/qty', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({qty_ordered: newQty})
+    }).then(r => r.json()).then(data => {
+        if (data.success) location.reload();
+        else { alert('Failed to update quantity.'); btn.innerHTML = '<i class="fas fa-check"></i>'; btn.disabled = false; }
+    }).catch(() => { alert('Network error.'); btn.innerHTML = '<i class="fas fa-check"></i>'; btn.disabled = false; });
+}
+async function downloadPO() {
+    const el = document.getElementById('capture-area');
+    const btn = event.target.closest('.btn-action');
+    const origHTML = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Export...';
+    btn.disabled = true;
+    try {
+        const canvas = await html2canvas(el, { scale:3, useCORS:true, backgroundColor:'#ffffff' });
+        const link = document.createElement('a');
+        link.href = canvas.toDataURL('image/png', 1.0);
+        link.download = 'FLEX_PO_{{ order.order_number }}.png';
+        link.click();
+    } catch(e) { alert('Export failed.'); }
+    finally { btn.innerHTML = origHTML; btn.disabled = false; }
 }
 </script>
 {% endblock %}
