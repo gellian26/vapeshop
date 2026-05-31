@@ -37,6 +37,7 @@ COMMENT ON DATABASE flex_vape_db IS 'F.L.E.X Vape Shop Inventory Management Data
 CREATE TABLE IF NOT EXISTS product (
     id          SERIAL PRIMARY KEY,
     barcode     VARCHAR(50) UNIQUE,
+    code_name   VARCHAR(50),
     name        VARCHAR(100) NOT NULL,
     flavor      VARCHAR(100),
     type        VARCHAR(50),
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS product (
     qty         INTEGER DEFAULT 0,
     cost        DOUBLE PRECISION DEFAULT 0.0,
     price       DOUBLE PRECISION DEFAULT 0.0,
+    discount    DOUBLE PRECISION DEFAULT 0.0,
     image       VARCHAR(255) DEFAULT 'default.jpg',
     date_added  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -71,24 +73,51 @@ CREATE TABLE IF NOT EXISTS stock_out_log (
     cost        DOUBLE PRECISION DEFAULT 0.0
 );
 
+-- Purchase Orders (saved orders from Purchase Report page)
+CREATE TABLE IF NOT EXISTS purchase_order (
+    id             SERIAL PRIMARY KEY,
+    po_number      VARCHAR(30) UNIQUE NOT NULL,
+    date_created   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    date_confirmed TIMESTAMP,
+    status         VARCHAR(20) DEFAULT 'pending',   -- 'pending' | 'confirmed'
+    notes          VARCHAR(255)
+);
+
+-- Purchase Order Items (line items linked to each purchase order)
+CREATE TABLE IF NOT EXISTS purchase_order_item (
+    id           SERIAL PRIMARY KEY,
+    po_id        INTEGER NOT NULL REFERENCES purchase_order(id) ON DELETE CASCADE,
+    product_id   INTEGER,
+    name         VARCHAR(100) NOT NULL,
+    flavor       VARCHAR(100),
+    category     VARCHAR(50),
+    ordered_qty  INTEGER DEFAULT 0,
+    received_qty INTEGER,                           -- filled when order is confirmed
+    unit_cost    DOUBLE PRECISION DEFAULT 0.0
+);
+
 
 -- ------------------------------------------------------------
 -- 3. INDEXES (for faster dashboard queries)
 -- ------------------------------------------------------------
 
 -- Speed up date-range sales queries
-CREATE INDEX IF NOT EXISTS idx_stock_out_date  ON stock_out_log (date);
-CREATE INDEX IF NOT EXISTS idx_stock_in_date   ON stock_in_log  (date);
+CREATE INDEX IF NOT EXISTS idx_stock_out_date    ON stock_out_log    (date);
+CREATE INDEX IF NOT EXISTS idx_stock_in_date     ON stock_in_log     (date);
 
 -- Speed up low-stock lookups
-CREATE INDEX IF NOT EXISTS idx_product_qty     ON product (qty);
+CREATE INDEX IF NOT EXISTS idx_product_qty       ON product          (qty);
 
 -- Speed up barcode scans
-CREATE INDEX IF NOT EXISTS idx_product_barcode ON product (barcode);
+CREATE INDEX IF NOT EXISTS idx_product_barcode   ON product          (barcode);
 
 -- Speed up name-based grouping on reports
-CREATE INDEX IF NOT EXISTS idx_stock_out_name  ON stock_out_log (name);
-CREATE INDEX IF NOT EXISTS idx_stock_in_name   ON stock_in_log  (name);
+CREATE INDEX IF NOT EXISTS idx_stock_out_name    ON stock_out_log    (name);
+CREATE INDEX IF NOT EXISTS idx_stock_in_name     ON stock_in_log     (name);
+
+-- Speed up purchase order lookups
+CREATE INDEX IF NOT EXISTS idx_po_status         ON purchase_order   (status);
+CREATE INDEX IF NOT EXISTS idx_po_item_po_id     ON purchase_order_item (po_id);
 
 
 -- ------------------------------------------------------------
@@ -97,11 +126,11 @@ CREATE INDEX IF NOT EXISTS idx_stock_in_name   ON stock_in_log  (name);
 
 INSERT INTO product (barcode, name, flavor, type, version, mg, qty, cost, price, image)
 VALUES
-    ('8001001', 'RELX Infinity', 'Mango',          'Pod',  'v2', '3%', 20, 350.00, 550.00, 'default.jpg'),
-    ('8001002', 'RELX Infinity', 'Blueberry',       'Pod',  'v2', '3%', 15, 350.00, 550.00, 'default.jpg'),
-    ('8001003', 'VUSE Alto',     'Mint',             'Pod',  'v1', '5%', 10, 280.00, 450.00, 'default.jpg'),
-    ('8001004', 'SMOK Nord 5',   'Watermelon Ice',  'Mod',  'v5', '3%',  8, 800.00, 1200.00,'default.jpg'),
-    ('8001005', 'ELFBAR 600',    'Strawberry',      'Disp', '-',  '2%', 30, 120.00, 200.00, 'default.jpg')
+    ('8001001', 'RELX Infinity', 'Mango',         'Pod',  'v2', '3%', 20, 350.00, 550.00, 'default.jpg'),
+    ('8001002', 'RELX Infinity', 'Blueberry',     'Pod',  'v2', '3%', 15, 350.00, 550.00, 'default.jpg'),
+    ('8001003', 'VUSE Alto',     'Mint',           'Pod',  'v1', '5%', 10, 280.00, 450.00, 'default.jpg'),
+    ('8001004', 'SMOK Nord 5',   'Watermelon Ice', 'Mod',  'v5', '3%',  8, 800.00, 1200.00,'default.jpg'),
+    ('8001005', 'ELFBAR 600',    'Strawberry',     'Disp', '-',  '2%', 30, 120.00, 200.00, 'default.jpg')
 ON CONFLICT (barcode) DO NOTHING;
 
 
