@@ -4666,6 +4666,10 @@ function generatePO() {
 }
 
 /* ── image export ── */
+function isMobile() {
+  return /Android|iPhone|iPad|iPod|Opera Mini|IEMobile|WPDesktop/i.test(navigator.userAgent);
+}
+
 async function downloadImage() {
   const area = document.getElementById('po-area');
   if (area.style.display === 'none') generatePO();
@@ -4674,11 +4678,44 @@ async function downloadImage() {
   btn.disabled  = true;
   try {
     const canvas = await html2canvas(area, { scale:3, useCORS:true, backgroundColor:'#ffffff' });
-    const a = document.createElement('a');
-    a.href     = canvas.toDataURL('image/png', 1.0);
-    a.download = 'FLEX_PurchaseOrder_{{ date }}.png';
-    a.click();
-  } catch(e) { alert('Export failed.'); }
+    const dataUrl = canvas.toDataURL('image/png', 1.0);
+
+    if (isMobile()) {
+      /* On mobile: show image in a fullscreen modal so user can long-press → Save */
+      let overlay = document.getElementById('img-save-overlay');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'img-save-overlay';
+        overlay.style.cssText = `
+          position:fixed;top:0;left:0;width:100%;height:100%;
+          background:rgba(0,0,0,0.88);z-index:9999;
+          display:flex;flex-direction:column;align-items:center;
+          justify-content:flex-start;overflow-y:auto;padding:16px;box-sizing:border-box;`;
+        overlay.innerHTML = `
+          <div style="width:100%;max-width:480px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+              <span style="color:#fff;font-size:.9rem;font-weight:700;">
+                <i class="fas fa-hand-pointer"></i>&nbsp; Long-press the image → <em>Save</em>
+              </span>
+              <button onclick="document.getElementById('img-save-overlay').remove()"
+                style="background:#fff2;border:none;color:#fff;font-size:1.2rem;
+                       border-radius:50%;width:32px;height:32px;cursor:pointer;line-height:1;">✕</button>
+            </div>
+            <img id="img-save-preview" src="" alt="Purchase Order"
+              style="width:100%;border-radius:10px;box-shadow:0 4px 32px rgba(0,0,0,.5);">
+          </div>`;
+        document.body.appendChild(overlay);
+      }
+      document.getElementById('img-save-preview').src = dataUrl;
+      overlay.style.display = 'flex';
+    } else {
+      /* Desktop: normal download */
+      const a = document.createElement('a');
+      a.href     = dataUrl;
+      a.download = 'FLEX_PurchaseOrder_{{ date }}.png';
+      a.click();
+    }
+  } catch(e) { alert('Export failed: ' + e.message); }
   finally {
     btn.innerHTML = '<i class="fas fa-image"></i> Image';
     btn.disabled  = false;
