@@ -4344,7 +4344,7 @@ TEMPLATES["purchase_report.html"] = """
     display: flex; align-items: center; gap: 8px;
 }
 
-.po-table { width: 100%; border-collapse: collapse; }
+.po-table { width: 100%; border-collapse: collapse; min-width: 480px; }
 .po-table th {
     background: #f1f5f9; text-align: left; padding: 10px 11px;
     font-size: .68rem; color: #475569; border: 1px solid var(--border);
@@ -4354,6 +4354,12 @@ TEMPLATES["purchase_report.html"] = """
 .po-table tfoot td {
     background: #f8f7ff; font-weight: 800; font-size: .83rem;
     border: 1px solid var(--border); padding: 11px;
+}
+@media (max-width: 600px) {
+    .po-table { min-width: 520px; }
+    .po-table th { font-size: .6rem; padding: 7px 6px; letter-spacing: 0; }
+    .po-table td { font-size: .72rem; padding: 7px 6px; }
+    .po-table tfoot td { font-size: .75rem; padding: 8px 6px; }
 }
 .po-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
 .po-dot-zero { background: var(--red); }
@@ -4380,7 +4386,8 @@ TEMPLATES["purchase_report.html"] = """
 @media (max-width: 600px) {
     .pr-wrap { padding: 4px; }
     .pr-page-header { flex-direction: column; align-items: flex-start; }
-    #po-area { padding: 16px 12px; border-left: none; border-right: none; }
+    #po-area { padding: 14px 8px; border-left: none; border-right: none; }
+    #po-area > div { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
 }
 
 /* ── PRINT ── */
@@ -4527,7 +4534,7 @@ TEMPLATES["purchase_report.html"] = """
       Items listed are flagged as Critical Stock Warnings (below 5 units) on the Reports page.
     </div>
 
-    <div style="overflow-x:auto;">
+    <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">
       <table class="po-table">
         <thead>
           <tr>
