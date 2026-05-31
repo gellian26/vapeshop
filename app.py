@@ -279,6 +279,104 @@ def reports():
 
 
 
+@app.route('/purchase_report', methods=['GET', 'POST'])
+def purchase_report():
+    now_dt = datetime.now()
+    today  = now_dt.date()
+
+    # ── period filter ──────────────────────────────────────────────
+    period = request.args.get('period', 'weekly')
+    if period == 'daily':
+        start_date = today
+    elif period == 'monthly':
+        start_date = today - timedelta(days=30)
+    else:                          # weekly (default)
+        start_date = today - timedelta(days=7)
+    start_str = start_date.strftime('%Y-%m-%d')
+
+    # ── restock threshold (how many units = "low") ─────────────────
+    threshold = int(request.args.get('threshold', 10))
+
+    # ── all products + sales velocity (last 30 days) ───────────────
+    velocity_since = (today - timedelta(days=30)).strftime('%Y-%m-%d')
+    all_products   = Product.query.order_by(Product.qty.asc()).all()
+
+    # units sold per (name, flavor) last 30 days
+    velocity_rows = db.session.query(
+        StockOutLog.name, StockOutLog.flavor,
+        func.sum(StockOutLog.qty).label('sold30')
+    ).filter(
+        func.date(StockOutLog.date) >= velocity_since
+    ).group_by(StockOutLog.name, StockOutLog.flavor).all()
+    velocity_map = {(r.name, r.flavor or ''): int(r.sold30 or 0) for r in velocity_rows}
+
+    # ── build recommendation list ──────────────────────────────────
+    recommendations = []
+    for p in all_products:
+        sold30     = velocity_map.get((p.name, p.flavor or ''), 0)
+        daily_avg  = round(sold30 / 30, 2)
+        days_left  = round(p.qty / daily_avg, 1) if daily_avg > 0 else None
+
+        # urgency level
+        if p.qty == 0:
+            urgency = 'critical'
+        elif p.qty < 5:
+            urgency = 'critical'
+        elif p.qty <= threshold:
+            urgency = 'low'
+        else:
+            urgency = 'ok'
+
+        # smart suggested qty: cover 14 days of sales, min 10, max 200
+        if daily_avg > 0:
+            suggested = max(10, round(daily_avg * 14))
+        else:
+            suggested = 10 if p.qty <= threshold else 0
+
+        recommendations.append({
+            'id':        p.id,
+            'name':      p.name,
+            'flavor':    p.flavor or '',
+            'type':      p.type or '',
+            'qty':       p.qty,
+            'cost':      p.cost or 0.0,
+            'sold30':    sold30,
+            'daily_avg': daily_avg,
+            'days_left': days_left,
+            'urgency':   urgency,
+            'suggested': suggested,
+        })
+
+    # split into needs-attention vs healthy
+    needs_attention = [r for r in recommendations if r['urgency'] in ('critical', 'low')]
+    healthy_count   = len([r for r in recommendations if r['urgency'] == 'ok'])
+    critical_count  = len([r for r in recommendations if r['urgency'] == 'critical'])
+    low_count       = len([r for r in recommendations if r['urgency'] == 'low'])
+
+    # ── stock-in history for the selected period ───────────────────
+    logs_in = StockInLog.query.filter(
+        func.date(StockInLog.date) >= start_str
+    ).order_by(StockInLog.date.desc()).all()
+
+    total_units_received = sum(l.qty for l in logs_in)
+
+    return render_template(
+        'purchase_report.html',
+        needs_attention=needs_attention,
+        healthy_count=healthy_count,
+        critical_count=critical_count,
+        low_count=low_count,
+        total_products=len(all_products),
+        logs_in=logs_in,
+        total_units_received=total_units_received,
+        date=today.strftime("%B %d, %Y"),
+        now=now_dt.strftime("%H:%M"),
+        period=period,
+        threshold=threshold,
+        start_date=start_date.strftime("%B %d, %Y"),
+    )
+
+
 @app.route('/api/low_stock')
 def api_low_stock():
     items = Product.query.filter(Product.qty < 5).order_by(Product.qty.asc()).limit(10).all()
@@ -1082,6 +1180,7 @@ TEMPLATES["base.html"] = """
             <li><a href="/sales" class="{{ 'active' if request.path == '/sales' }}"><i class="fa-solid fa-cart-shopping"></i> <span>Sales</span></a></li>
             <li><a href="/products" class="{{ 'active' if request.path == '/products' }}"><i class="fa-solid fa-tags"></i> <span>Products</span></a></li>
             <li><a href="/reports" class="{{ 'active' if request.path == '/reports' }}"><i class="fa-solid fa-file-waveform"></i> <span>Reports</span></a></li>
+            <li><a href="/purchase_report" class="{{ 'active' if request.path == '/purchase_report' }}"><i class="fa-solid fa-basket-shopping"></i> <span>Purchase Report</span></a></li>
             <li><a href="/analytics" class="{{ 'active' if request.path == '/analytics' }}"><i class="fa-solid fa-chart-line"></i> <span>Analytics</span></a></li>
             <li><a href="/settings" class="{{ 'active' if request.path == '/settings' }}"><i class="fa-solid fa-gear"></i> <span>Settings</span></a></li>
         </ul>
@@ -4131,6 +4230,540 @@ const dz = document.getElementById('dropZone');
 ['dragleave','drop'].forEach(ev =>
     dz.addEventListener(ev, () => dz.classList.remove('dragover'))
 );
+</script>
+{% endblock %}
+"""
+
+TEMPLATES["purchase_report.html"] = """
+{% extends "base.html" %}
+{% block content %}
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+<style>
+/* ── ROOT TOKENS ─────────────────────────────────────────── */
+:root{
+  --brand:#705194;--brand-light:#f3eeff;--green:#10b981;--red:#ef4444;
+  --orange:#f59e0b;--blue:#3b82f6;--grad:linear-gradient(135deg,#705194,#9b6fc4);
+  --bg:#f8f7ff;--border:#e8e4f0;--text:#1e293b;--muted:#64748b;
+  --radius:16px;--radius-sm:10px;--shadow:0 2px 10px rgba(112,81,148,.07);
+  --navy:#162135;
+}
+
+/* ── LAYOUT ──────────────────────────────────────────────── */
+.pr-wrap{ max-width:960px;margin:0 auto;padding:12px; }
+
+/* ── TOP TOOLBAR ─────────────────────────────────────────── */
+.pr-toolbar{
+  display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+  background:#fff;border:1.5px solid var(--border);border-radius:var(--radius);
+  padding:12px 16px;margin-bottom:18px;box-shadow:var(--shadow);
+}
+.pr-toolbar-left{ display:flex;gap:8px;flex:1;flex-wrap:wrap;align-items:center; }
+.pr-toolbar-right{ display:flex;gap:8px;flex-wrap:wrap; }
+
+.seg-ctrl{ display:flex;background:#f1f5f9;border-radius:8px;padding:3px; }
+.seg-btn{
+  text-decoration:none;padding:7px 14px;border-radius:6px;
+  font-size:.78rem;font-weight:600;color:#64748b;transition:.18s;white-space:nowrap;
+}
+.seg-btn.active{ background:#fff;color:var(--brand);box-shadow:0 2px 8px rgba(112,81,148,.13);font-weight:700; }
+
+.threshold-form{ display:flex;align-items:center;gap:6px; }
+.threshold-form label{ font-size:.72rem;font-weight:700;color:var(--muted);white-space:nowrap; }
+.threshold-input{
+  width:60px;padding:6px 8px;border:1.5px solid var(--border);border-radius:8px;
+  font-size:.82rem;font-weight:700;text-align:center;color:var(--text);
+  background:#f8f7ff;outline:none;
+}
+.threshold-input:focus{ border-color:var(--brand);box-shadow:0 0 0 3px rgba(112,81,148,.12); }
+
+.btn-tool{
+  border:none;padding:8px 14px;border-radius:8px;font-weight:700;
+  font-size:.78rem;color:#fff;cursor:pointer;display:flex;align-items:center;gap:6px;
+  transition:.18s;white-space:nowrap;
+}
+.btn-tool:hover{ filter:brightness(1.1);transform:translateY(-1px); }
+.btn-pdf{ background:#475569; }
+.btn-img{ background:var(--brand); }
+
+/* ── KPI STRIP ───────────────────────────────────────────── */
+.kpi-strip{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+  gap:12px;margin-bottom:18px;
+}
+.kpi-card{
+  background:#fff;border:1.5px solid var(--border);border-radius:var(--radius);
+  padding:14px 16px;text-align:center;box-shadow:var(--shadow);
+}
+.kpi-card .kpi-label{ font-size:.6rem;font-weight:800;text-transform:uppercase;color:#94a3b8;letter-spacing:.5px; }
+.kpi-card .kpi-val{ font-size:1.6rem;font-weight:800;margin-top:2px;line-height:1; }
+.kv-red   { color:var(--red); }
+.kv-orange{ color:var(--orange); }
+.kv-green { color:var(--green); }
+.kv-blue  { color:var(--blue); }
+
+/* ── SECTION HEADING ─────────────────────────────────────── */
+.sec-head{
+  font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;
+  color:#475569;display:flex;align-items:center;gap:8px;margin:22px 0 10px;
+}
+.sec-head::after{ content:"";flex:1;height:1px;background:var(--border); }
+.sec-head .badge-pill{
+  font-size:.65rem;font-weight:700;padding:2px 9px;border-radius:99px;
+  background:var(--brand-light);color:var(--brand);
+}
+
+/* ── RECOMMENDATION CARDS ────────────────────────────────── */
+.rec-grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
+  gap:12px;margin-bottom:22px;
+}
+.rec-card{
+  background:#fff;border:1.5px solid var(--border);border-radius:var(--radius);
+  padding:14px 16px;box-shadow:var(--shadow);position:relative;overflow:hidden;
+  transition:box-shadow .22s,transform .22s;
+}
+.rec-card:hover{ box-shadow:0 6px 24px rgba(112,81,148,.13);transform:translateY(-2px); }
+
+/* urgency left strip */
+.rec-card::before{
+  content:"";position:absolute;left:0;top:0;bottom:0;width:4px;border-radius:4px 0 0 4px;
+}
+.rec-card.critical::before{ background:var(--red); }
+.rec-card.low::before     { background:var(--orange); }
+
+/* urgency tag */
+.urgency-tag{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:.62rem;font-weight:800;text-transform:uppercase;letter-spacing:.4px;
+  padding:2px 8px;border-radius:99px;margin-bottom:6px;
+}
+.urgency-tag.critical{ background:#fee2e2;color:#991b1b; }
+.urgency-tag.low     { background:#fef9c3;color:#854d0e; }
+
+.rec-product{ font-size:.9rem;font-weight:800;color:var(--text);line-height:1.2; }
+.rec-flavor { font-size:.78rem;color:var(--muted);margin-bottom:8px; }
+
+.rec-meta{
+  display:grid;grid-template-columns:1fr 1fr;gap:5px 10px;
+  margin-bottom:12px;
+}
+.rec-meta-item{ font-size:.72rem; }
+.rec-meta-item .rml{ color:var(--muted);font-weight:600; }
+.rec-meta-item .rmv{ font-weight:800;color:var(--text); }
+.rmv.red   { color:var(--red); }
+.rmv.orange{ color:var(--orange); }
+
+/* purchase input row */
+.purchase-row{
+  display:flex;align-items:center;gap:8px;
+  background:#f8f7ff;border:1.5px solid var(--border);
+  border-radius:var(--radius-sm);padding:8px 10px;
+}
+.purchase-row label{ font-size:.65rem;font-weight:800;color:var(--muted);text-transform:uppercase;white-space:nowrap; }
+.qty-stepper{ display:flex;align-items:center;gap:4px;margin-left:auto; }
+.qty-btn{
+  width:28px;height:28px;border:1.5px solid var(--border);background:#fff;
+  border-radius:7px;font-size:.9rem;font-weight:700;cursor:pointer;color:var(--text);
+  display:flex;align-items:center;justify-content:center;transition:.15s;
+}
+.qty-btn:hover{ background:var(--brand-light);border-color:var(--brand);color:var(--brand); }
+.qty-input{
+  width:52px;text-align:center;border:1.5px solid var(--brand);border-radius:7px;
+  padding:4px;font-size:.88rem;font-weight:800;color:var(--text);background:#fff;outline:none;
+}
+.qty-input:focus{ box-shadow:0 0 0 3px rgba(112,81,148,.15); }
+.total-cost-tag{
+  font-size:.7rem;font-weight:700;color:var(--green);white-space:nowrap;
+  background:#ecfdf5;padding:3px 7px;border-radius:6px;border:1px solid #a7f3d0;
+}
+
+/* suggested chip */
+.suggested-chip{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:.65rem;font-weight:700;color:var(--brand);
+  background:var(--brand-light);padding:2px 8px;border-radius:99px;cursor:pointer;
+  border:1px solid rgba(112,81,148,.2);transition:.15s;
+}
+.suggested-chip:hover{ background:#e7d9ff;transform:scale(1.04); }
+
+/* ── PRINT ORDER SUMMARY ──────────────────────────────────── */
+#order-summary-area{
+  background:#fff;border:1px solid var(--border);border-radius:var(--radius);
+  padding:5vw;margin-top:20px;
+}
+.doc-header-pr{
+  text-align:center;border-bottom:2px solid var(--navy);
+  padding-bottom:18px;margin-bottom:24px;
+}
+.doc-header-pr h2{ font-size:clamp(1.1rem,4vw,1.5rem);font-weight:800;letter-spacing:1px;margin:0; }
+.doc-header-pr p{ margin:4px 0 0;font-size:.8rem;color:#64748b;text-transform:uppercase; }
+.doc-header-pr .doc-sub{ margin-top:12px;font-size:1rem;font-weight:700;color:var(--brand);text-transform:uppercase; }
+.doc-header-pr .doc-date{ font-size:.75rem;color:#94a3b8;margin-top:4px; }
+
+.order-table{ width:100%;border-collapse:collapse; }
+.order-table th{
+  background:#f1f5f9;text-align:left;padding:9px 10px;
+  font-size:.68rem;color:#475569;border:1px solid var(--border);text-transform:uppercase;
+}
+.order-table td{ padding:9px 10px;font-size:.78rem;border:1px solid var(--border);vertical-align:middle; }
+.order-table tfoot td{
+  background:#f8f7ff;font-weight:800;font-size:.82rem;border:1px solid var(--border);padding:10px;
+}
+
+.urgency-dot{
+  display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle;
+}
+.dot-critical{ background:var(--red); }
+.dot-low     { background:var(--orange); }
+
+.doc-footer-pr{
+  margin-top:24px;padding-top:12px;border-top:1px solid var(--border);
+  display:flex;justify-content:space-between;font-size:.6rem;color:#94a3b8;flex-wrap:wrap;gap:6px;
+}
+
+/* ── HISTORY TABLE ───────────────────────────────────────── */
+.history-table{ width:100%;border-collapse:collapse;min-width:420px; }
+.history-table th{
+  background:#f1f5f9;text-align:left;padding:8px 10px;
+  font-size:.68rem;color:#475569;border:1px solid var(--border);text-transform:uppercase;
+}
+.history-table td{ padding:8px 10px;font-size:.77rem;border:1px solid var(--border); }
+.history-table tbody tr:nth-child(even){ background:#fafafa; }
+.qty-badge-in{
+  display:inline-block;padding:2px 9px;background:#ecfdf5;color:#065f46;
+  border-radius:99px;font-size:.7rem;font-weight:700;border:1px solid #a7f3d0;
+}
+
+/* ── MOBILE ──────────────────────────────────────────────── */
+@media(max-width:600px){
+  .pr-wrap{ padding:4px; }
+  .pr-toolbar{ padding:10px;border-radius:0; }
+  .rec-grid{ grid-template-columns:1fr; }
+  #order-summary-area{ padding:16px 12px;border-left:none;border-right:none; }
+}
+
+/* ── PRINT ───────────────────────────────────────────────── */
+@media print{
+  nav,.sidebar,.mobile-header,.no-print,.pr-toolbar{ display:none!important; }
+  body{ background:#fff;margin:0;padding:0; }
+  .main-content{ margin-left:0!important;width:100%!important;padding:0!important; }
+  #order-summary-area{ border:none;box-shadow:none;padding:32px; }
+  .rec-grid,.kpi-strip,.sec-head.no-print-head{ display:none!important; }
+}
+</style>
+
+<div class="pr-wrap">
+
+<!-- ── TOOLBAR ─────────────────────────────────────────── -->
+<div class="pr-toolbar no-print">
+  <div class="pr-toolbar-left">
+    <!-- Period tabs -->
+    <div class="seg-ctrl">
+      <a href="/purchase_report?period=daily&threshold={{ threshold }}"   class="seg-btn {{ 'active' if period=='daily' }}">Today</a>
+      <a href="/purchase_report?period=weekly&threshold={{ threshold }}"  class="seg-btn {{ 'active' if period=='weekly' }}">7 Days</a>
+      <a href="/purchase_report?period=monthly&threshold={{ threshold }}" class="seg-btn {{ 'active' if period=='monthly' }}">30 Days</a>
+    </div>
+    <!-- Threshold control -->
+    <form class="threshold-form" method="GET" action="/purchase_report">
+      <input type="hidden" name="period" value="{{ period }}">
+      <label><i class="fas fa-sliders"></i> Low-stock at:</label>
+      <input class="threshold-input" type="number" name="threshold" value="{{ threshold }}" min="1" max="999" id="threshInput">
+      <button type="submit" class="btn-tool" style="background:var(--brand);padding:6px 12px;">Apply</button>
+    </form>
+  </div>
+  <div class="pr-toolbar-right">
+    <button onclick="window.print()" class="btn-tool btn-pdf"><i class="fas fa-file-pdf"></i> PDF</button>
+    <button onclick="downloadImage()" class="btn-tool btn-img"><i class="fas fa-image"></i> Image</button>
+  </div>
+</div>
+
+<!-- ── KPI STRIP ────────────────────────────────────────── -->
+<div class="kpi-strip no-print">
+  <div class="kpi-card">
+    <div class="kpi-label">Critical (0–4 units)</div>
+    <div class="kpi-val kv-red">{{ critical_count }}</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Low Stock (≤{{ threshold }} units)</div>
+    <div class="kpi-val kv-orange">{{ low_count }}</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Healthy Products</div>
+    <div class="kpi-val kv-green">{{ healthy_count }}</div>
+  </div>
+  <div class="kpi-card">
+    <div class="kpi-label">Received ({{ period }})</div>
+    <div class="kpi-val kv-blue">{{ total_units_received }}</div>
+  </div>
+</div>
+
+<!-- ── RECOMMENDATION CARDS ─────────────────────────────── -->
+{% if needs_attention %}
+<div class="sec-head no-print">
+  <i class="fas fa-triangle-exclamation" style="color:var(--orange);"></i>
+  Needs Reorder
+  <span class="badge-pill">{{ needs_attention|length }} items</span>
+</div>
+
+<div class="rec-grid no-print" id="recGrid">
+  {% for r in needs_attention %}
+  <div class="rec-card {{ r.urgency }}" id="card-{{ r.id }}">
+
+    <div class="urgency-tag {{ r.urgency }}">
+      {% if r.urgency == 'critical' %}
+        <i class="fas fa-circle-exclamation"></i> Critical
+      {% else %}
+        <i class="fas fa-circle-arrow-down"></i> Low Stock
+      {% endif %}
+    </div>
+
+    <div class="rec-product">{{ r.name }}</div>
+    <div class="rec-flavor">{{ r.flavor if r.flavor else 'No flavor' }}{% if r.type %} &nbsp;·&nbsp; <span style="text-transform:capitalize;">{{ r.type }}</span>{% endif %}</div>
+
+    <div class="rec-meta">
+      <div class="rec-meta-item">
+        <span class="rml">On Hand</span><br>
+        <span class="rmv {{ 'red' if r.qty < 5 else 'orange' }}">{{ r.qty }} units</span>
+      </div>
+      <div class="rec-meta-item">
+        <span class="rml">Sold (30d)</span><br>
+        <span class="rmv">{{ r.sold30 }} units</span>
+      </div>
+      <div class="rec-meta-item">
+        <span class="rml">Daily Avg</span><br>
+        <span class="rmv">{{ r.daily_avg }}/day</span>
+      </div>
+      <div class="rec-meta-item">
+        <span class="rml">Days Left</span><br>
+        <span class="rmv {{ 'red' if r.days_left is not none and r.days_left < 3 else '' }}">
+          {{ r.days_left if r.days_left is not none else '—' }}
+        </span>
+      </div>
+    </div>
+
+    <!-- Purchase input -->
+    <div class="purchase-row">
+      <label><i class="fas fa-cart-plus"></i> Order Qty</label>
+      <span class="suggested-chip" onclick="setSuggested({{ r.id }}, {{ r.suggested }})">
+        <i class="fas fa-lightbulb"></i> Suggested: {{ r.suggested }}
+      </span>
+      <div class="qty-stepper">
+        <button type="button" class="qty-btn" onclick="adjustQty({{ r.id }}, -1)">−</button>
+        <input  class="qty-input" type="number" id="qty-{{ r.id }}" value="{{ r.suggested }}"
+                min="0" max="9999" data-cost="{{ r.cost }}"
+                oninput="updateCost({{ r.id }})">
+        <button type="button" class="qty-btn" onclick="adjustQty({{ r.id }}, 1)">+</button>
+      </div>
+    </div>
+    {% if r.cost > 0 %}
+    <div style="text-align:right;margin-top:6px;">
+      <span class="total-cost-tag" id="cost-{{ r.id }}">
+        Est. Cost: ₱{{ "{:,.2f}".format(r.suggested * r.cost) }}
+      </span>
+    </div>
+    {% endif %}
+
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+<div class="no-print" style="text-align:center;padding:3rem;color:var(--muted);background:#fff;border-radius:var(--radius);border:1.5px solid var(--border);margin-bottom:18px;">
+  <i class="fas fa-circle-check fa-2x" style="color:var(--green);display:block;margin-bottom:10px;"></i>
+  <strong>All products are sufficiently stocked!</strong><br>
+  <span style="font-size:.82rem;">No items below the threshold of {{ threshold }} units.</span>
+</div>
+{% endif %}
+
+<!-- ── GENERATE ORDER BUTTON ─────────────────────────────── -->
+{% if needs_attention %}
+<div class="no-print" style="text-align:center;margin-bottom:24px;">
+  <button onclick="generateOrder()" class="btn-tool" style="background:var(--green);font-size:.9rem;padding:12px 28px;border-radius:var(--radius);gap:8px;">
+    <i class="fas fa-file-circle-check"></i> Generate Purchase Order
+  </button>
+</div>
+{% endif %}
+
+<!-- ── PURCHASE ORDER DOCUMENT (hidden until generated) ──── -->
+<div id="order-summary-area" style="display:none;">
+  <div class="doc-header-pr">
+    <h2>F.L.E.X VAPE SHOP</h2>
+    <p>Inventory Management System</p>
+    <div class="doc-sub">Purchase Order</div>
+    <div class="doc-date">Issued: {{ date }} &nbsp;·&nbsp; {{ now }}</div>
+  </div>
+
+  <div style="overflow-x:auto;margin-bottom:24px;">
+    <table class="order-table" id="orderTable">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Product</th>
+          <th>Flavor / Type</th>
+          <th>Status</th>
+          <th style="text-align:center;">Current Stock</th>
+          <th style="text-align:center;">Order Qty</th>
+          <th style="text-align:right;">Unit Cost</th>
+          <th style="text-align:right;">Total Cost</th>
+        </tr>
+      </thead>
+      <tbody id="orderTbody"></tbody>
+      <tfoot>
+        <tr>
+          <td colspan="5" style="text-align:right;">Grand Total</td>
+          <td id="foot-qty" style="text-align:center;">—</td>
+          <td></td>
+          <td id="foot-cost" style="text-align:right;color:var(--green);">₱0.00</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <div class="doc-footer-pr">
+    <span>Generated: {{ now }} &nbsp;·&nbsp; Threshold: ≤{{ threshold }} units</span>
+    <span>F.L.E.X System &bull; Purchase Record</span>
+  </div>
+</div>
+
+<!-- ── STOCK-IN HISTORY ──────────────────────────────────── -->
+<div class="sec-head">
+  <i class="fas fa-clock-rotate-left" style="color:var(--brand);"></i>
+  Stock-In History
+  <span class="badge-pill">{{ period }} · from {{ start_date }}</span>
+</div>
+<div style="overflow-x:auto;margin-bottom:10px;">
+  <table class="history-table">
+    <thead>
+      <tr>
+        <th>Date &amp; Time</th>
+        <th>Product</th>
+        <th>Flavor</th>
+        <th>Category</th>
+        <th style="text-align:center;">Qty In</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for log in logs_in %}
+      <tr>
+        <td style="white-space:nowrap;color:var(--muted);font-size:.72rem;">{{ log.date.strftime('%b %d, %Y %I:%M %p') }}</td>
+        <td><strong>{{ log.name }}</strong></td>
+        <td style="color:var(--muted);">{{ log.flavor or '—' }}</td>
+        <td style="color:var(--muted);text-transform:capitalize;">{{ log.category or '—' }}</td>
+        <td style="text-align:center;"><span class="qty-badge-in">+{{ log.qty }}</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" style="text-align:center;padding:1.5rem;color:var(--muted);">No stock-in records for this period.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+</div><!-- /pr-wrap -->
+
+<script>
+/* ── qty stepper helpers ─────────────────────────────── */
+function adjustQty(id, delta) {
+  const inp = document.getElementById('qty-' + id);
+  const newVal = Math.max(0, (parseInt(inp.value) || 0) + delta);
+  inp.value = newVal;
+  updateCost(id);
+}
+function setSuggested(id, val) {
+  const inp = document.getElementById('qty-' + id);
+  inp.value = val;
+  updateCost(id);
+}
+function updateCost(id) {
+  const inp  = document.getElementById('qty-' + id);
+  const cost = parseFloat(inp.dataset.cost) || 0;
+  const el   = document.getElementById('cost-' + id);
+  if (el) {
+    const total = (parseInt(inp.value) || 0) * cost;
+    el.textContent = 'Est. Cost: ₱' + total.toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+}
+
+/* ── generate purchase order ─────────────────────────── */
+function generateOrder() {
+  const items = [];
+  {% for r in needs_attention %}
+  (function(){
+    const inp = document.getElementById('qty-{{ r.id }}');
+    const qty = parseInt(inp ? inp.value : 0) || 0;
+    if (qty > 0) {
+      items.push({
+        name:    '{{ r.name|e }}',
+        flavor:  '{{ r.flavor|e }}',
+        type:    '{{ r.type|e }}',
+        urgency: '{{ r.urgency }}',
+        stock:   {{ r.qty }},
+        qty:     qty,
+        cost:    {{ r.cost }},
+      });
+    }
+  })();
+  {% endfor %}
+
+  if (items.length === 0) {
+    alert('No items with order quantity > 0. Please enter quantities first.');
+    return;
+  }
+
+  const tbody = document.getElementById('orderTbody');
+  tbody.innerHTML = '';
+  let totalQty = 0, totalCost = 0;
+
+  items.forEach((item, i) => {
+    const lineTotal = item.qty * item.cost;
+    totalQty  += item.qty;
+    totalCost += lineTotal;
+    const dotClass = item.urgency === 'critical' ? 'dot-critical' : 'dot-low';
+    const label    = item.urgency === 'critical' ? 'Critical' : 'Low Stock';
+    tbody.innerHTML += `
+      <tr>
+        <td>${i+1}</td>
+        <td><strong>${item.name}</strong></td>
+        <td style="color:#64748b;">${item.flavor || '—'}${item.type ? ' · '+item.type : ''}</td>
+        <td><span class="urgency-dot ${dotClass}"></span>${label}</td>
+        <td style="text-align:center;">${item.stock}</td>
+        <td style="text-align:center;font-weight:800;color:#705194;">${item.qty}</td>
+        <td style="text-align:right;">${item.cost > 0 ? '₱'+item.cost.toLocaleString('en-PH',{minimumFractionDigits:2}) : '—'}</td>
+        <td style="text-align:right;font-weight:700;color:#10b981;">${item.cost > 0 ? '₱'+lineTotal.toLocaleString('en-PH',{minimumFractionDigits:2}) : '—'}</td>
+      </tr>`;
+  });
+
+  document.getElementById('foot-qty').textContent  = totalQty + ' units';
+  document.getElementById('foot-cost').textContent = '₱' + totalCost.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  const area = document.getElementById('order-summary-area');
+  area.style.display = 'block';
+  area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ── image download ─────────────────────────────────── */
+async function downloadImage() {
+  const area = document.getElementById('order-summary-area');
+  const wasHidden = area.style.display === 'none';
+  if (wasHidden) { generateOrder(); }
+
+  const btn = document.querySelector('.btn-img');
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> ...';
+  btn.disabled  = true;
+
+  try {
+    const canvas = await html2canvas(area, { scale: 3, useCORS: true, backgroundColor: '#ffffff' });
+    const link   = document.createElement('a');
+    link.href     = canvas.toDataURL('image/png', 1.0);
+    link.download = 'FLEX_Purchase_Order_{{ date }}.png';
+    link.click();
+  } catch(e) {
+    alert('Export failed.');
+  } finally {
+    btn.innerHTML = '<i class="fas fa-image"></i> Image';
+    btn.disabled  = false;
+  }
+}
 </script>
 {% endblock %}
 """
