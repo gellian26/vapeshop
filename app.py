@@ -74,26 +74,6 @@ class StockOutLog(db.Model):
     price = db.Column(db.Float, default=0.0)
     cost = db.Column(db.Float, default=0.0)
 
-class PurchaseOrder(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    po_number = db.Column(db.String(30), unique=True, nullable=False)
-    date_created = db.Column(db.DateTime, default=datetime.now)
-    date_confirmed = db.Column(db.DateTime, nullable=True)
-    status = db.Column(db.String(20), default='pending')  # 'pending' or 'confirmed'
-    notes = db.Column(db.String(255), nullable=True)
-    items = db.relationship('PurchaseOrderItem', backref='order', lazy=True, cascade='all, delete-orphan')
-
-class PurchaseOrderItem(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    po_id = db.Column(db.Integer, db.ForeignKey('purchase_order.id'), nullable=False)
-    product_id = db.Column(db.Integer, nullable=True)
-    name = db.Column(db.String(100), nullable=False)
-    flavor = db.Column(db.String(100), nullable=True)
-    category = db.Column(db.String(50), nullable=True)
-    ordered_qty = db.Column(db.Integer, default=0)
-    received_qty = db.Column(db.Integer, nullable=True)   # filled on confirmation
-    unit_cost = db.Column(db.Float, default=0.0)
-
 # --- 3. LOGIN PROTECTION ---
 # Set FLEX_USER and FLEX_PASS environment variables in production.
 ADMIN_USER = os.environ.get("FLEX_USER", "flexinventory")
@@ -353,103 +333,7 @@ def purchase_report():
     )
 
 
-@app.route('/purchase_report/save', methods=['POST'])
-def save_purchase_order():
-    try:
-        data = request.get_json()
-        items = data.get('items', [])
-        notes = data.get('notes', '').strip()
-        if not items:
-            return jsonify({'success': False, 'error': 'No items provided.'}), 400
-
-        date_part = datetime.now().strftime('%Y%m%d')
-        count_today = PurchaseOrder.query.filter(
-            PurchaseOrder.po_number.like(f'PO-{date_part}-%')
-        ).count()
-        po_number = f"PO-{date_part}-{count_today + 1:04d}"
-
-        po = PurchaseOrder(po_number=po_number, status='pending', notes=notes or None)
-        db.session.add(po)
-        db.session.flush()
-
-        for item in items:
-            db.session.add(PurchaseOrderItem(
-                po_id=po.id,
-                product_id=item.get('product_id'),
-                name=item.get('name', ''),
-                flavor=item.get('flavor', '') or '',
-                category=item.get('category', '') or '',
-                ordered_qty=int(item.get('qty', 0)),
-                unit_cost=float(item.get('cost', 0)),
-            ))
-
-        db.session.commit()
-        return jsonify({'success': True, 'po_number': po_number, 'po_id': po.id})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/purchase_orders')
-def purchase_orders():
-    orders = PurchaseOrder.query.order_by(PurchaseOrder.date_created.desc()).all()
-    return render_template('purchase_orders.html', orders=orders)
-
-
-@app.route('/purchase_orders/<int:po_id>')
-def view_purchase_order(po_id):
-    po = db.session.get(PurchaseOrder, po_id)
-    if not po:
-        flash("Purchase order not found.", "danger")
-        return redirect(url_for('purchase_orders'))
-    return render_template('view_purchase_order.html', po=po)
-
-
-@app.route('/purchase_orders/<int:po_id>/confirm', methods=['POST'])
-def confirm_purchase_order(po_id):
-    po = db.session.get(PurchaseOrder, po_id)
-    if not po or po.status == 'confirmed':
-        flash("Order not found or already confirmed.", "danger")
-        return redirect(url_for('purchase_orders'))
-
-    try:
-        for item in po.items:
-            field_name = f"received_{item.id}"
-            received = int(request.form.get(field_name, 0) or 0)
-            item.received_qty = received
-
-            if received > 0:
-                p = Product.query.filter_by(name=item.name, flavor=item.flavor).first()
-                if p:
-                    p.qty += received
-                db.session.add(StockInLog(
-                    name=item.name,
-                    flavor=item.flavor,
-                    category=item.category or (p.type if p else '') or '',
-                    qty=received,
-                ))
-
-        po.status = 'confirmed'
-        po.date_confirmed = datetime.now()
-        db.session.commit()
-        flash(f"Purchase Order {po.po_number} confirmed! Stock updated successfully.", "success")
-    except Exception as e:
-        db.session.rollback()
-        flash(f"Confirmation failed: {str(e)}", "danger")
-
-    return redirect(url_for('purchase_orders'))
-
-
-@app.route('/purchase_orders/<int:po_id>/delete', methods=['POST'])
-def delete_purchase_order(po_id):
-    po = db.session.get(PurchaseOrder, po_id)
-    if po:
-        db.session.delete(po)
-        db.session.commit()
-        flash(f"Purchase Order {po.po_number} deleted.", "success")
-    return redirect(url_for('purchase_orders'))
-
-
+@app.route('/api/low_stock')
 def api_low_stock():
     items = Product.query.filter(Product.qty < 5).order_by(Product.qty.asc()).limit(10).all()
     return jsonify([{"name": p.name, "flavor": p.flavor or "", "qty": p.qty} for p in items])
@@ -1253,7 +1137,6 @@ TEMPLATES["base.html"] = """
             <li><a href="/products" class="{{ 'active' if request.path == '/products' }}"><i class="fa-solid fa-tags"></i> <span>Products</span></a></li>
             <li><a href="/reports" class="{{ 'active' if request.path == '/reports' }}"><i class="fa-solid fa-file-waveform"></i> <span>Reports</span></a></li>
             <li><a href="/purchase_report" class="{{ 'active' if request.path == '/purchase_report' }}"><i class="fa-solid fa-basket-shopping"></i> <span>Purchase Report</span></a></li>
-            <li><a href="/purchase_orders" class="{{ 'active' if request.path.startswith('/purchase_orders') }}"><i class="fa-solid fa-truck-ramp-box"></i> <span>Purchase Orders</span></a></li>
             <li><a href="/analytics" class="{{ 'active' if request.path == '/analytics' }}"><i class="fa-solid fa-chart-line"></i> <span>Analytics</span></a></li>
             <li><a href="/settings" class="{{ 'active' if request.path == '/settings' }}"><i class="fa-solid fa-gear"></i> <span>Settings</span></a></li>
         </ul>
@@ -4565,7 +4448,7 @@ TEMPLATES["purchase_report.html"] = """
       </thead>
       <tbody>
         {% for r in recommendations %}
-        <tr data-id="{{ r.id }}" data-name="{{ r.name|e }}" data-flavor="{{ r.flavor|e }}" data-type="{{ r.type|e }}" data-cost="{{ r.cost }}">
+        <tr>
           <!-- Product name + flavor -->
           <td>
             <div style="font-weight:800;color:var(--text);">{{ r.name }}</div>
@@ -4626,30 +4509,6 @@ TEMPLATES["purchase_report.html"] = """
     <button onclick="generatePO()" class="gen-btn">
       <i class="fas fa-file-circle-check"></i> Generate Purchase Order
     </button>
-    <button onclick="savePO()" class="gen-btn" style="background:var(--blue);box-shadow:0 4px 14px rgba(59,130,246,.25);">
-      <i class="fas fa-floppy-disk"></i> Save Order
-    </button>
-    <a href="/purchase_orders" class="gen-btn" style="background:#475569;box-shadow:0 4px 14px rgba(71,85,105,.2);text-decoration:none;">
-      <i class="fas fa-truck-ramp-box"></i> View Saved Orders
-    </a>
-  </div>
-
-  <!-- SAVE PO MODAL -->
-  <div id="save-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center;">
-    <div style="background:#fff;border-radius:16px;padding:28px;max-width:440px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.25);">
-      <div style="font-weight:800;font-size:1.05rem;color:#1e293b;margin-bottom:6px;"><i class="fas fa-floppy-disk" style="color:var(--blue);margin-right:8px;"></i>Save Purchase Order</div>
-      <p style="font-size:.82rem;color:#64748b;margin-bottom:16px;">This will save the order so you can confirm receipt later when the products arrive.</p>
-      <label style="font-size:.75rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.4px;">Notes (optional)</label>
-      <input id="po-notes" type="text" placeholder="e.g. Supplier name, delivery date..." style="width:100%;margin:6px 0 18px;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:.85rem;outline:none;">
-      <div style="display:flex;gap:10px;">
-        <button onclick="submitSavePO()" style="flex:1;padding:11px;background:var(--blue);color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:.88rem;">
-          <i class="fas fa-check"></i> Save Order
-        </button>
-        <button onclick="document.getElementById('save-modal').style.display='none'" style="padding:11px 18px;background:#f1f5f9;color:#475569;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:.88rem;">
-          Cancel
-        </button>
-      </div>
-    </div>
   </div>
 
   {% endif %}
@@ -4754,74 +4613,6 @@ function updCost(id) {
   el.textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
 
-/* ── collect order items from table ── */
-function collectOrderItems() {
-  const items = [];
-  document.querySelectorAll('.rec-table tbody tr[data-id]').forEach(row => {
-    const id   = row.dataset.id;
-    const qty  = parseInt(document.getElementById('qty-' + id)?.value) || 0;
-    if (qty > 0) items.push({
-      product_id: parseInt(id),
-      name:       row.dataset.name,
-      flavor:     row.dataset.flavor,
-      category:   row.dataset.type,
-      qty,
-      cost: parseFloat(row.dataset.cost) || 0,
-    });
-  });
-  return items;
-}
-
-/* ── save purchase order (open modal) ── */
-function savePO() {
-  const items = collectOrderItems();
-  if (!items.length) {
-    alert('All order quantities are 0. Please enter how many units you need to order.');
-    return;
-  }
-  document.getElementById('po-notes').value = '';
-  const modal = document.getElementById('save-modal');
-  modal.style.display = 'flex';
-}
-
-/* ── submit save ── */
-async function submitSavePO() {
-  const items = collectOrderItems();
-  const notes = document.getElementById('po-notes').value.trim();
-  const btn = document.querySelector('#save-modal button');
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
-  btn.disabled = true;
-  try {
-    const res = await fetch('/purchase_report/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items, notes }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      document.getElementById('save-modal').style.display = 'none';
-      // Brief success overlay then redirect
-      const toast = document.createElement('div');
-      toast.innerHTML = `<i class="fas fa-check-circle"></i> Order <strong>${data.po_number}</strong> saved! Redirecting…`;
-      Object.assign(toast.style, {
-        position:'fixed', bottom:'24px', left:'50%', transform:'translateX(-50%)',
-        background:'#10b981', color:'#fff', padding:'13px 22px', borderRadius:'12px',
-        fontWeight:'700', fontSize:'.88rem', zIndex:'99999', boxShadow:'0 6px 24px rgba(0,0,0,.18)'
-      });
-      document.body.appendChild(toast);
-      setTimeout(() => window.location.href = '/purchase_orders', 1400);
-    } else {
-      alert('Save failed: ' + (data.error || 'Unknown error'));
-      btn.innerHTML = '<i class="fas fa-check"></i> Save Order';
-      btn.disabled = false;
-    }
-  } catch(e) {
-    alert('Network error. Please try again.');
-    btn.innerHTML = '<i class="fas fa-check"></i> Save Order';
-    btn.disabled = false;
-  }
-}
-
 /* ── generate purchase order ── */
 function generatePO() {
   const rows = [];
@@ -4897,318 +4688,6 @@ async function downloadImage() {
 {% endblock %}
 """
 
-TEMPLATES["purchase_orders.html"] = """
-{% extends "base.html" %}
-{% block content %}
-<style>
-:root {
-    --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
-    --orange:#f59e0b; --blue:#3b82f6; --border:#e8e4f0; --text:#1e293b; --muted:#64748b;
-    --radius:16px; --shadow:0 2px 12px rgba(112,81,148,.07); --navy:#162135;
-}
-.po-wrap { max-width: 960px; margin: 0 auto; padding: 12px; }
-.po-page-header { display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
-.po-page-header h1 { font-size:1.6rem; font-weight:800; color:var(--text); margin:0; letter-spacing:-.5px; }
-.po-page-header p  { color:var(--muted); font-size:.85rem; margin:3px 0 0; }
-.btn-new { background:var(--brand); color:#fff; border:none; padding:10px 18px; border-radius:10px; font-weight:700; font-size:.82rem; cursor:pointer; display:inline-flex; align-items:center; gap:6px; text-decoration:none; transition:.18s; }
-.btn-new:hover { filter:brightness(1.1); transform:translateY(-1px); }
-.orders-grid { display:grid; gap:14px; }
-.order-card {
-    background:#fff; border:1.5px solid var(--border); border-radius:var(--radius);
-    padding:18px 20px; box-shadow:var(--shadow); display:flex; flex-wrap:wrap;
-    justify-content:space-between; align-items:flex-start; gap:14px;
-    transition:box-shadow .2s, transform .2s;
-}
-.order-card:hover { box-shadow:0 6px 24px rgba(112,81,148,.13); transform:translateY(-2px); }
-.order-card.confirmed { border-left:4px solid var(--green); }
-.order-card.pending   { border-left:4px solid var(--orange); }
-.po-num { font-size:1rem; font-weight:800; color:var(--text); }
-.po-date { font-size:.75rem; color:var(--muted); margin-top:2px; }
-.po-notes { font-size:.78rem; color:#475569; margin-top:6px; font-style:italic; }
-.po-items-summary { font-size:.78rem; color:var(--muted); margin-top:4px; }
-.status-badge { display:inline-flex; align-items:center; gap:5px; padding:4px 12px; border-radius:99px; font-size:.72rem; font-weight:800; }
-.status-badge.pending   { background:#fff7ed; color:#92400e; border:1px solid #fed7aa; }
-.status-badge.confirmed { background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; }
-.card-actions { display:flex; gap:8px; flex-wrap:wrap; }
-.btn-sm { padding:7px 14px; border-radius:8px; font-size:.75rem; font-weight:700; cursor:pointer; border:none; display:inline-flex; align-items:center; gap:5px; text-decoration:none; transition:.15s; }
-.btn-sm:hover { filter:brightness(1.1); }
-.btn-view    { background:#f1f5f9; color:#1e293b; }
-.btn-confirm { background:var(--green); color:#fff; }
-.btn-delete  { background:#fee2e2; color:#991b1b; }
-.empty-state { text-align:center; padding:4rem 2rem; background:#fff; border:1.5px solid var(--border); border-radius:var(--radius); }
-.empty-state i { color:var(--muted); font-size:2.5rem; margin-bottom:12px; display:block; }
-.empty-state strong { font-size:1rem; color:var(--text); }
-.empty-state p { color:var(--muted); font-size:.83rem; margin:4px 0 0; }
-</style>
-
-<div class="po-wrap">
-  <div class="po-page-header">
-    <div>
-      <h1><i class="fas fa-truck-ramp-box" style="color:var(--brand);margin-right:8px;"></i>Purchase Orders</h1>
-      <p>Track and confirm receipt of ordered products from suppliers</p>
-    </div>
-    <a href="/purchase_report" class="btn-new"><i class="fas fa-plus"></i> New Purchase Order</a>
-  </div>
-
-  {% if not orders %}
-  <div class="empty-state">
-    <i class="fas fa-inbox"></i>
-    <strong>No purchase orders yet</strong>
-    <p>Go to Purchase Report and click "Save Order" to create one.</p>
-  </div>
-  {% else %}
-  <div class="orders-grid">
-    {% for po in orders %}
-    <div class="order-card {{ po.status }}">
-      <div>
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-          <span class="po-num">{{ po.po_number }}</span>
-          <span class="status-badge {{ po.status }}">
-            {% if po.status == 'confirmed' %}<i class="fas fa-circle-check"></i> Confirmed
-            {% else %}<i class="fas fa-clock"></i> Pending Receipt
-            {% endif %}
-          </span>
-        </div>
-        <div class="po-date">
-          Created: {{ po.date_created.strftime('%b %d, %Y %I:%M %p') }}
-          {% if po.date_confirmed %}&nbsp;·&nbsp; Confirmed: {{ po.date_confirmed.strftime('%b %d, %Y %I:%M %p') }}{% endif %}
-        </div>
-        {% if po.notes %}<div class="po-notes"><i class="fas fa-note-sticky"></i> {{ po.notes }}</div>{% endif %}
-        <div class="po-items-summary">
-          {{ po.items|length }} item{{ 's' if po.items|length != 1 }} &nbsp;·&nbsp;
-          {% set total_ordered = namespace(v=0) %}
-          {% for item in po.items %}{% set total_ordered.v = total_ordered.v + item.ordered_qty %}{% endfor %}
-          {{ total_ordered.v }} units ordered
-          {% if po.status == 'confirmed' %}
-            &nbsp;·&nbsp;
-            {% set total_received = namespace(v=0) %}
-            {% for item in po.items %}{% set total_received.v = total_received.v + (item.received_qty or 0) %}{% endfor %}
-            {{ total_received.v }} units received
-          {% endif %}
-        </div>
-      </div>
-      <div class="card-actions">
-        <a href="/purchase_orders/{{ po.id }}" class="btn-sm btn-view"><i class="fas fa-eye"></i> View</a>
-        {% if po.status == 'pending' %}
-        <a href="/purchase_orders/{{ po.id }}" class="btn-sm btn-confirm"><i class="fas fa-clipboard-check"></i> Confirm Receipt</a>
-        {% endif %}
-        <form method="POST" action="/purchase_orders/{{ po.id }}/delete" onsubmit="return confirm('Delete {{ po.po_number }}?');" style="display:inline;">
-          <button type="submit" class="btn-sm btn-delete"><i class="fas fa-trash"></i></button>
-        </form>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
-</div>
-{% endblock %}
-"""
-
-TEMPLATES["view_purchase_order.html"] = """
-{% extends "base.html" %}
-{% block content %}
-<style>
-:root {
-    --brand:#705194; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
-    --orange:#f59e0b; --blue:#3b82f6; --border:#e8e4f0; --text:#1e293b; --muted:#64748b;
-    --radius:16px; --shadow:0 2px 12px rgba(112,81,148,.07); --navy:#162135;
-}
-.vpo-wrap { max-width: 900px; margin: 0 auto; padding: 12px; }
-.vpo-header { display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
-.vpo-header h1 { font-size:1.45rem; font-weight:800; color:var(--text); margin:0; }
-.vpo-header p  { color:var(--muted); font-size:.82rem; margin:3px 0 0; }
-.back-btn { background:#f1f5f9; color:#475569; border:none; padding:9px 15px; border-radius:10px; font-weight:700; font-size:.78rem; cursor:pointer; display:inline-flex; align-items:center; gap:6px; text-decoration:none; transition:.15s; }
-.back-btn:hover { background:#e2e8f0; }
-.po-meta-card { background:#fff; border:1.5px solid var(--border); border-radius:var(--radius); padding:18px 20px; margin-bottom:20px; box-shadow:var(--shadow); display:flex; flex-wrap:wrap; gap:20px; justify-content:space-between; align-items:center; }
-.meta-item label { font-size:.65rem; font-weight:800; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); display:block; margin-bottom:3px; }
-.meta-item span  { font-size:.9rem; font-weight:700; color:var(--text); }
-.status-badge { display:inline-flex; align-items:center; gap:5px; padding:5px 14px; border-radius:99px; font-size:.75rem; font-weight:800; }
-.status-badge.pending   { background:#fff7ed; color:#92400e; border:1px solid #fed7aa; }
-.status-badge.confirmed { background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; }
-.confirm-section { background:#fff; border:1.5px solid var(--border); border-radius:var(--radius); padding:20px; box-shadow:var(--shadow); }
-.confirm-section h2 { font-size:1rem; font-weight:800; color:var(--text); margin-bottom:4px; }
-.confirm-section p  { font-size:.8rem; color:var(--muted); margin-bottom:18px; }
-.recv-table { width:100%; border-collapse:collapse; min-width:560px; }
-.recv-table th { background:var(--navy); color:#fff; padding:10px 13px; font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.4px; }
-.recv-table th:first-child { border-radius:10px 0 0 0; }
-.recv-table th:last-child  { border-radius:0 10px 0 0; }
-.recv-table td { padding:12px 13px; font-size:.82rem; border-bottom:1px solid var(--border); vertical-align:middle; }
-.recv-table tbody tr:last-child td { border-bottom:none; }
-.recv-table tbody tr:hover { background:#faf7ff; }
-.recv-input { width:80px; padding:7px 10px; border:1.5px solid var(--border); border-radius:8px; font-size:.85rem; font-weight:700; text-align:center; outline:none; transition:.18s; }
-.recv-input:focus { border-color:var(--brand); box-shadow:0 0 0 3px rgba(112,81,148,.12); }
-.diff-badge { display:inline-flex; align-items:center; gap:4px; padding:3px 9px; border-radius:99px; font-size:.72rem; font-weight:800; }
-.diff-ok   { background:#ecfdf5; color:#065f46; }
-.diff-over { background:#eff6ff; color:#1d4ed8; }
-.diff-short { background:#fef2f2; color:#991b1b; }
-.diff-na   { background:#f8fafc; color:#94a3b8; }
-.submit-confirm-btn {
-    margin-top:20px; padding:13px 28px; background:var(--green); color:#fff;
-    border:none; border-radius:12px; font-weight:800; font-size:.95rem; cursor:pointer;
-    display:inline-flex; align-items:center; gap:8px; transition:.2s;
-    box-shadow:0 4px 14px rgba(16,185,129,.25);
-}
-.submit-confirm-btn:hover { filter:brightness(1.08); transform:translateY(-2px); }
-.confirmed-view-row td { background:#f0fdf4; }
-@media (max-width:600px) { .vpo-wrap { padding:4px; } }
-</style>
-
-<div class="vpo-wrap">
-  <!-- Back button -->
-  <div style="margin-bottom:16px;">
-    <a href="/purchase_orders" class="back-btn"><i class="fas fa-arrow-left"></i> All Orders</a>
-  </div>
-
-  <!-- PO meta card -->
-  <div class="vpo-header">
-    <div>
-      <h1><i class="fas fa-file-invoice" style="color:var(--brand);margin-right:8px;"></i>{{ po.po_number }}</h1>
-      <p>Purchase Order Details</p>
-    </div>
-    <span class="status-badge {{ po.status }}">
-      {% if po.status == 'confirmed' %}<i class="fas fa-circle-check"></i> Confirmed
-      {% else %}<i class="fas fa-clock"></i> Pending Receipt
-      {% endif %}
-    </span>
-  </div>
-
-  <div class="po-meta-card">
-    <div class="meta-item"><label>Order Number</label><span>{{ po.po_number }}</span></div>
-    <div class="meta-item"><label>Date Created</label><span>{{ po.date_created.strftime('%B %d, %Y %I:%M %p') }}</span></div>
-    {% if po.date_confirmed %}
-    <div class="meta-item"><label>Date Confirmed</label><span>{{ po.date_confirmed.strftime('%B %d, %Y %I:%M %p') }}</span></div>
-    {% endif %}
-    <div class="meta-item"><label>Total Items</label><span>{{ po.items|length }} product{{ 's' if po.items|length != 1 }}</span></div>
-    {% if po.notes %}
-    <div class="meta-item"><label>Notes</label><span>{{ po.notes }}</span></div>
-    {% endif %}
-  </div>
-
-  <!-- Confirm receipt form (if pending) / View results (if confirmed) -->
-  <div class="confirm-section">
-    {% if po.status == 'pending' %}
-    <h2><i class="fas fa-clipboard-check" style="color:var(--green);margin-right:7px;"></i>Confirm Product Receipt</h2>
-    <p>Enter how many units you actually received from your supplier. These will be added to your inventory on confirmation.</p>
-
-    <form method="POST" action="/purchase_orders/{{ po.id }}/confirm" onsubmit="return confirmReceipt(this);">
-      <div style="overflow-x:auto;border-radius:10px;border:1.5px solid var(--border);">
-        <table class="recv-table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Product</th>
-              <th style="text-align:center;">Ordered Qty</th>
-              <th style="text-align:center;">Received Qty</th>
-              <th style="text-align:center;">Difference</th>
-              <th style="text-align:right;">Unit Cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for item in po.items %}
-            <tr>
-              <td style="color:var(--muted);font-size:.75rem;">{{ loop.index }}</td>
-              <td>
-                <div style="font-weight:800;color:var(--text);">{{ item.name }}</div>
-                <div style="font-size:.73rem;color:var(--muted);">{{ item.flavor or '—' }}{% if item.category %} · {{ item.category }}{% endif %}</div>
-              </td>
-              <td style="text-align:center;font-weight:800;color:var(--brand);">{{ item.ordered_qty }}</td>
-              <td style="text-align:center;">
-                <input class="recv-input" type="number" name="received_{{ item.id }}"
-                       id="recv-{{ item.id }}"
-                       value="{{ item.ordered_qty }}" min="0" max="9999"
-                       oninput="updateDiff({{ item.id }}, {{ item.ordered_qty }})">
-              </td>
-              <td style="text-align:center;" id="diff-{{ item.id }}">
-                <span class="diff-badge diff-ok"><i class="fas fa-check"></i> Match</span>
-              </td>
-              <td style="text-align:right;color:var(--muted);">
-                {% if item.unit_cost > 0 %}₱{{ "{:,.2f}".format(item.unit_cost) }}{% else %}—{% endif %}
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <button type="submit" class="submit-confirm-btn">
-        <i class="fas fa-check-circle"></i> Confirm Receipt &amp; Update Stock
-      </button>
-    </form>
-
-    {% else %}
-    <!-- Confirmed view -->
-    <h2><i class="fas fa-circle-check" style="color:var(--green);margin-right:7px;"></i>Receipt Confirmed</h2>
-    <p>Products were received and stock was updated on {{ po.date_confirmed.strftime('%B %d, %Y at %I:%M %p') }}.</p>
-
-    <div style="overflow-x:auto;border-radius:10px;border:1.5px solid var(--border);">
-      <table class="recv-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Product</th>
-            <th style="text-align:center;">Ordered Qty</th>
-            <th style="text-align:center;">Received Qty</th>
-            <th style="text-align:center;">Difference</th>
-            <th style="text-align:right;">Unit Cost</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for item in po.items %}
-          {% set diff = (item.received_qty or 0) - item.ordered_qty %}
-          <tr class="confirmed-view-row">
-            <td style="color:var(--muted);font-size:.75rem;">{{ loop.index }}</td>
-            <td>
-              <div style="font-weight:800;color:var(--text);">{{ item.name }}</div>
-              <div style="font-size:.73rem;color:var(--muted);">{{ item.flavor or '—' }}{% if item.category %} · {{ item.category }}{% endif %}</div>
-            </td>
-            <td style="text-align:center;font-weight:700;">{{ item.ordered_qty }}</td>
-            <td style="text-align:center;font-weight:800;color:var(--green);">{{ item.received_qty if item.received_qty is not none else '—' }}</td>
-            <td style="text-align:center;">
-              {% if item.received_qty is none %}
-                <span class="diff-badge diff-na">—</span>
-              {% elif diff == 0 %}
-                <span class="diff-badge diff-ok"><i class="fas fa-check"></i> Match</span>
-              {% elif diff > 0 %}
-                <span class="diff-badge diff-over"><i class="fas fa-arrow-up"></i> +{{ diff }} extra</span>
-              {% else %}
-                <span class="diff-badge diff-short"><i class="fas fa-arrow-down"></i> {{ diff }} short</span>
-              {% endif %}
-            </td>
-            <td style="text-align:right;color:var(--muted);">
-              {% if item.unit_cost > 0 %}₱{{ "{:,.2f}".format(item.unit_cost) }}{% else %}—{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% endif %}
-  </div>
-</div>
-
-<script>
-function updateDiff(id, ordered) {
-  const inp = document.getElementById('recv-' + id);
-  const received = parseInt(inp.value) || 0;
-  const diff = received - ordered;
-  const el = document.getElementById('diff-' + id);
-  if (diff === 0)       el.innerHTML = '<span class="diff-badge diff-ok"><i class="fas fa-check"></i> Match</span>';
-  else if (diff > 0)    el.innerHTML = `<span class="diff-badge diff-over"><i class="fas fa-arrow-up"></i> +${diff} extra</span>`;
-  else                  el.innerHTML = `<span class="diff-badge diff-short"><i class="fas fa-arrow-down"></i> ${diff} short</span>`;
-}
-
-function confirmReceipt(form) {
-  const inputs = form.querySelectorAll('.recv-input');
-  let hasAny = false;
-  inputs.forEach(inp => { if (parseInt(inp.value) > 0) hasAny = true; });
-  if (!hasAny) {
-    return confirm('All received quantities are 0. Confirm anyway? No stock will be added.');
-  }
-  return confirm('Confirm receipt? This will update your inventory stock levels.');
-}
-</script>
-{% endblock %}
-"""
-
 # --- 7. ASSIGN DICTLOADER TO JINJA WORKFLOW ---
 app.jinja_loader = DictLoader(TEMPLATES)
 
@@ -5229,6 +4708,7 @@ with app.app_context():
             conn.commit()
     except Exception:
         pass  # Column already exists or DB doesn't support IF NOT EXISTS — safe to ignore
+
 # --- 9. LOCAL DEV SERVER ---
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=os.environ.get('FLASK_DEBUG', 'false').lower() == 'true')
