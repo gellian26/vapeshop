@@ -77,7 +77,7 @@ class StockOutLog(db.Model):
 class PurchaseOrder(db.Model):
     __tablename__ = 'purchase_order'
     id         = db.Column(db.Integer, primary_key=True)
-    po_number  = db.Column(db.String(30), unique=True, nullable=False)
+    po_number  = db.Column(db.String(30), unique=True, nullable=True)  # nullable=True to survive legacy NULL rows
     created_at = db.Column(db.DateTime, default=datetime.now)
     status     = db.Column(db.String(20), default='pending')
     items      = db.relationship('PurchaseOrderItem', backref='order', lazy=True, cascade='all,delete-orphan')
@@ -390,11 +390,12 @@ def _ensure_po_tables():
 
 @app.route('/receive_orders')
 def receive_orders():
+    db.session.rollback()  # Always start with a clean session on this page
     _ensure_po_tables()
     try:
         orders = PurchaseOrder.query.order_by(PurchaseOrder.created_at.desc()).all()
     except Exception:
-        db.session.rollback()  # Clear aborted transaction so teardown doesn't crash
+        db.session.rollback()
         orders = []
     return render_template('receive_orders.html', orders=orders)
 
