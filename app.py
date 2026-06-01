@@ -76,11 +76,12 @@ class StockOutLog(db.Model):
 
 class PurchaseOrder(db.Model):
     __tablename__ = 'purchase_order'
-    id         = db.Column(db.Integer, primary_key=True)
-    po_number  = db.Column(db.String(30), unique=True, nullable=True)  # nullable=True to survive legacy NULL rows
-    created_at = db.Column(db.DateTime, default=datetime.now)
-    status     = db.Column(db.String(20), default='pending')
-    items      = db.relationship('PurchaseOrderItem', backref='order', lazy=True, cascade='all,delete-orphan')
+    id           = db.Column(db.Integer, primary_key=True)
+    order_number = db.Column(db.String(30), unique=True, nullable=True)  # actual DB column name
+    po_number    = db.Column(db.String(30), unique=True, nullable=True)  # legacy alias
+    created_at   = db.Column(db.DateTime, default=datetime.now)
+    status       = db.Column(db.String(20), default='pending')
+    items        = db.relationship('PurchaseOrderItem', backref='order', lazy=True, cascade='all,delete-orphan')
 
 class PurchaseOrderItem(db.Model):
     __tablename__ = 'purchase_order_item'
@@ -366,7 +367,10 @@ def _ensure_po_tables():
                 )'''))
             # Add columns that may be missing on existing tables
             conn.execute(db.text("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS po_number VARCHAR(30)"))
+            conn.execute(db.text("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS order_number VARCHAR(30)"))
             conn.execute(db.text("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'"))
+            conn.execute(db.text("UPDATE purchase_order SET po_number = order_number WHERE po_number IS NULL AND order_number IS NOT NULL"))
+            conn.execute(db.text("UPDATE purchase_order SET order_number = po_number WHERE order_number IS NULL AND po_number IS NOT NULL"))
             conn.execute(db.text('''
                 CREATE TABLE IF NOT EXISTS purchase_order_item (
                     id SERIAL PRIMARY KEY,
@@ -418,7 +422,7 @@ def save_purchase_order():
         return jsonify({'ok': False, 'error': 'No items'}), 400
     try:
         po_num = 'PO-' + datetime.now().strftime('%Y%m%d-%H%M%S')
-        po = PurchaseOrder(po_number=po_num, status='pending')
+        po = PurchaseOrder(order_number=po_num, po_number=po_num, status='pending')
         db.session.add(po)
         db.session.flush()
         for it in items:
@@ -4946,7 +4950,7 @@ TEMPLATES["receive_orders.html"] = """
   <div class="po-card" id="po-card-{{ po.id }}">
     <div class="po-card-head" onclick="toggleCard({{ po.id }})">
       <div>
-        <div class="po-num"><i class="fas fa-file-invoice" style="color:var(--brand);margin-right:6px;"></i>{{ po.po_number }}</div>
+        <div class="po-num"><i class="fas fa-file-invoice" style="color:var(--brand);margin-right:6px;"></i>{{ po.po_number or po.order_number or ("PO-" ~ po.id) }}</div>
         <div class="po-date">{{ po.created_at.strftime('%b %d, %Y · %H:%M') }}</div>
       </div>
       <div class="po-meta">
@@ -5103,6 +5107,9 @@ with app.app_context():
         status VARCHAR(20) DEFAULT 'pending'
     )""")
     _run_sql("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS po_number VARCHAR(30)")
+    _run_sql("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS order_number VARCHAR(30)")
+    _run_sql("UPDATE purchase_order SET po_number = order_number WHERE po_number IS NULL AND order_number IS NOT NULL")
+    _run_sql("UPDATE purchase_order SET order_number = po_number WHERE order_number IS NULL AND po_number IS NOT NULL")
     _run_sql("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'")
     _run_sql("UPDATE purchase_order SET po_number = 'PO-LEGACY-' || id::text WHERE po_number IS NULL")
     _run_sql("""CREATE TABLE IF NOT EXISTS purchase_order_item (
