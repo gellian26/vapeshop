@@ -4306,12 +4306,6 @@ TEMPLATES["purchase_report.html"] = """
 }
 .suggested-chip:hover { background: #e0d0f5; transform: scale(1.04); }
 
-/* cost display */
-.line-cost {
-    font-size: .8rem; font-weight: 800; color: var(--green);
-    white-space: nowrap;
-}
-.unit-cost { font-size: .72rem; color: var(--muted); }
 
 /* ── GENERATE BUTTON ── */
 .gen-btn-wrap { text-align: center; margin: 6px 0 26px; }
@@ -4450,7 +4444,6 @@ TEMPLATES["purchase_report.html"] = """
           <th style="text-align:center;">Current Stock</th>
           <th>Sales Velocity (30d)</th>
           <th style="text-align:center;">Order Quantity</th>
-          <th style="text-align:right;">Est. Line Cost</th>
         </tr>
       </thead>
       <tbody>
@@ -4485,8 +4478,7 @@ TEMPLATES["purchase_report.html"] = """
               <button type="button" class="step-btn" onclick="adj({{ r.id }}, -1)">−</button>
               <input class="step-input" type="number" id="qty-{{ r.id }}"
                      value="{{ r.suggested }}" min="0" max="9999"
-                     data-cost="{{ r.cost }}"
-                     oninput="updCost({{ r.id }})">
+>
               <button type="button" class="step-btn" onclick="adj({{ r.id }}, 1)">+</button>
             </div>
             <div style="text-align:center;margin-top:4px;">
@@ -4496,15 +4488,6 @@ TEMPLATES["purchase_report.html"] = """
             </div>
           </td>
 
-          <!-- Line cost -->
-          <td style="text-align:right;">
-            {% if r.cost > 0 %}
-            <div class="line-cost" id="cost-{{ r.id }}">₱{{ "{:,.2f}".format(r.suggested * r.cost) }}</div>
-            <div class="unit-cost">₱{{ "{:,.2f}".format(r.cost) }}/unit</div>
-            {% else %}
-            <span style="color:var(--muted);font-size:.78rem;">No cost set</span>
-            {% endif %}
-          </td>
         </tr>
         {% endfor %}
       </tbody>
@@ -4543,8 +4526,6 @@ TEMPLATES["purchase_report.html"] = """
             <th>Flavor / Type</th>
             <th style="text-align:center;">Current Stock</th>
             <th style="text-align:center;">Order Qty</th>
-            <th style="text-align:right;">Unit Cost</th>
-            <th style="text-align:right;">Line Total</th>
           </tr>
         </thead>
         <tbody id="po-tbody"></tbody>
@@ -4552,8 +4533,6 @@ TEMPLATES["purchase_report.html"] = """
           <tr>
             <td colspan="4" style="text-align:right;">Grand Total</td>
             <td id="po-foot-qty" style="text-align:center;">—</td>
-            <td></td>
-            <td id="po-foot-cost" style="text-align:right;color:var(--green);">₱0.00</td>
           </tr>
         </tfoot>
       </table>
@@ -4606,20 +4585,10 @@ TEMPLATES["purchase_report.html"] = """
 function adj(id, d) {
   const inp = document.getElementById('qty-' + id);
   inp.value = Math.max(0, (parseInt(inp.value) || 0) + d);
-  updCost(id);
 }
 function setSug(id, v) {
   document.getElementById('qty-' + id).value = v;
-  updCost(id);
 }
-function updCost(id) {
-  const inp  = document.getElementById('qty-' + id);
-  const el   = document.getElementById('cost-' + id);
-  if (!el) return;
-  const total = (parseInt(inp.value) || 0) * (parseFloat(inp.dataset.cost) || 0);
-  el.textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
-}
-
 /* ── generate purchase order ── */
 function generatePO() {
   const rows = [];
@@ -4628,7 +4597,7 @@ function generatePO() {
     const qty = parseInt(document.getElementById('qty-{{ r.id }}')?.value) || 0;
     if (qty > 0) rows.push({
       name:'{{ r.name|e }}', flavor:'{{ r.flavor|e }}', type:'{{ r.type|e }}',
-      stock:{{ r.qty }}, qty, cost:{{ r.cost }}
+      stock:{{ r.qty }}, qty
     });
   })();
   {% endfor %}
@@ -4640,12 +4609,10 @@ function generatePO() {
 
   const tbody = document.getElementById('po-tbody');
   tbody.innerHTML = '';
-  let totQty = 0, totCost = 0;
+  let totQty = 0;
 
   rows.forEach((r, i) => {
-    const line = r.qty * r.cost;
     totQty  += r.qty;
-    totCost += line;
     const dot = r.stock === 0 ? 'po-dot-zero' : 'po-dot-low';
     const lbl = r.stock === 0 ? 'Out of Stock' : 'Critical';
     tbody.innerHTML += `
@@ -4657,15 +4624,10 @@ function generatePO() {
           <span class="po-dot ${dot}"></span>${r.stock} unit${r.stock!==1?'s':''}
         </td>
         <td style="text-align:center;font-weight:800;color:var(--brand);">${r.qty}</td>
-        <td style="text-align:right;">${r.cost>0?'₱'+r.cost.toLocaleString('en-PH',{minimumFractionDigits:2}):'—'}</td>
-        <td style="text-align:right;font-weight:700;color:var(--green);">
-          ${r.cost>0?'₱'+line.toLocaleString('en-PH',{minimumFractionDigits:2}):'—'}
-        </td>
       </tr>`;
   });
 
   document.getElementById('po-foot-qty').textContent  = totQty + ' units';
-  document.getElementById('po-foot-cost').textContent = '₱' + totCost.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});
 
   const area = document.getElementById('po-area');
   area.style.display = 'block';
