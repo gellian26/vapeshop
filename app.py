@@ -392,6 +392,21 @@ def _ensure_po_tables():
             conn.execute(db.text("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS ordered_qty INTEGER DEFAULT 0"))
             conn.execute(db.text("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS received_qty INTEGER DEFAULT 0"))
             conn.execute(db.text("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'"))
+            # Rename order_id -> po_id if old column name still exists in DB
+            conn.execute(db.text("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='purchase_order_item' AND column_name='order_id'
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='purchase_order_item' AND column_name='po_id'
+                    ) THEN
+                        ALTER TABLE purchase_order_item RENAME COLUMN order_id TO po_id;
+                    END IF;
+                END $$;
+            """))
             # Backfill any legacy rows where po_number is NULL
             conn.execute(db.text(
                 "UPDATE purchase_order SET po_number = 'PO-LEGACY-' || id::text WHERE po_number IS NULL"
@@ -5130,6 +5145,21 @@ with app.app_context():
     _run_sql("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS ordered_qty INTEGER DEFAULT 0")
     _run_sql("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS received_qty INTEGER DEFAULT 0")
     _run_sql("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'")
+    # Rename order_id -> po_id if the live DB still uses the old column name
+    _run_sql("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='purchase_order_item' AND column_name='order_id'
+            ) AND NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='purchase_order_item' AND column_name='po_id'
+            ) THEN
+                ALTER TABLE purchase_order_item RENAME COLUMN order_id TO po_id;
+            END IF;
+        END $$;
+    """)
     try:
         db.create_all()
     except Exception:
