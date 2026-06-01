@@ -354,16 +354,19 @@ def purchase_report():
 
 
 def _ensure_po_tables():
-    """Create purchase_order tables if missing — called lazily on first use."""
+    """Create purchase_order tables if missing and add any missing columns."""
     try:
         with db.engine.connect() as conn:
             conn.execute(db.text('''
                 CREATE TABLE IF NOT EXISTS purchase_order (
                     id SERIAL PRIMARY KEY,
-                    po_number VARCHAR(30) UNIQUE NOT NULL,
                     created_at TIMESTAMP DEFAULT NOW(),
                     status VARCHAR(20) DEFAULT 'pending'
                 )'''))
+            # Add columns that may be missing on existing tables
+            conn.execute(db.text("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS po_number VARCHAR(30)"))
+            conn.execute(db.text("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()"))
+            conn.execute(db.text("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'"))
             conn.execute(db.text('''
                 CREATE TABLE IF NOT EXISTS purchase_order_item (
                     id SERIAL PRIMARY KEY,
@@ -387,6 +390,7 @@ def receive_orders():
     try:
         orders = PurchaseOrder.query.order_by(PurchaseOrder.created_at.desc()).all()
     except Exception:
+        db.session.rollback()  # Clear aborted transaction so teardown doesn't crash
         orders = []
     return render_template('receive_orders.html', orders=orders)
 
@@ -5080,7 +5084,6 @@ with app.app_context():
     _run_sql("ALTER TABLE product ADD COLUMN IF NOT EXISTS code_name VARCHAR(50)")
     _run_sql("""CREATE TABLE IF NOT EXISTS purchase_order (
         id SERIAL PRIMARY KEY,
-        po_number VARCHAR(30) UNIQUE NOT NULL,
         created_at TIMESTAMP DEFAULT NOW(),
         status VARCHAR(20) DEFAULT 'pending'
     )""")
