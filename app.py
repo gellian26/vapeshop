@@ -5022,41 +5022,41 @@ except Exception:
 
 with app.app_context():
     db.create_all()
-    # Safe migration: add columns and new tables explicitly for serverless cold starts
-    try:
-        with db.engine.connect() as conn:
-            # Existing migrations
-            conn.execute(db.text("ALTER TABLE product ADD COLUMN IF NOT EXISTS discount FLOAT DEFAULT 0.0"))
-            conn.execute(db.text("ALTER TABLE product ADD COLUMN IF NOT EXISTS code_name VARCHAR(50)"))
 
-            # PurchaseOrder table
-            conn.execute(db.text("""
-                CREATE TABLE IF NOT EXISTS purchase_order (
-                    id         SERIAL PRIMARY KEY,
-                    po_number  VARCHAR(30) UNIQUE NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    status     VARCHAR(20) DEFAULT 'pending'
-                )
-            """))
+    # Each migration runs in its own connection so one failure never blocks the rest
+    def _run_sql(sql):
+        try:
+            with db.engine.connect() as conn:
+                conn.execute(db.text(sql))
+                conn.commit()
+        except Exception:
+            pass  # Already exists or not supported — safe to ignore
 
-            # PurchaseOrderItem table
-            conn.execute(db.text("""
-                CREATE TABLE IF NOT EXISTS purchase_order_item (
-                    id           SERIAL PRIMARY KEY,
-                    po_id        INTEGER NOT NULL REFERENCES purchase_order(id) ON DELETE CASCADE,
-                    product_id   INTEGER REFERENCES product(id) ON DELETE SET NULL,
-                    name         VARCHAR(100),
-                    flavor       VARCHAR(100),
-                    type         VARCHAR(50),
-                    ordered_qty  INTEGER DEFAULT 0,
-                    received_qty INTEGER DEFAULT 0,
-                    status       VARCHAR(20) DEFAULT 'pending'
-                )
-            """))
+    _run_sql("ALTER TABLE product ADD COLUMN IF NOT EXISTS discount FLOAT DEFAULT 0.0")
+    _run_sql("ALTER TABLE product ADD COLUMN IF NOT EXISTS code_name VARCHAR(50)")
 
-            conn.commit()
-    except Exception:
-        pass  # Safe to ignore — tables/columns already exist
+    _run_sql("""
+        CREATE TABLE IF NOT EXISTS purchase_order (
+            id         SERIAL PRIMARY KEY,
+            po_number  VARCHAR(30) UNIQUE NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            status     VARCHAR(20) DEFAULT 'pending'
+        )
+    """)
+
+    _run_sql("""
+        CREATE TABLE IF NOT EXISTS purchase_order_item (
+            id           SERIAL PRIMARY KEY,
+            po_id        INTEGER NOT NULL REFERENCES purchase_order(id) ON DELETE CASCADE,
+            product_id   INTEGER REFERENCES product(id) ON DELETE SET NULL,
+            name         VARCHAR(100),
+            flavor       VARCHAR(100),
+            type         VARCHAR(50),
+            ordered_qty  INTEGER DEFAULT 0,
+            received_qty INTEGER DEFAULT 0,
+            status       VARCHAR(20) DEFAULT 'pending'
+        )
+    """)
 
 # --- 9. LOCAL DEV SERVER ---
 if __name__ == '__main__':
