@@ -379,6 +379,15 @@ def _ensure_po_tables():
                     received_qty INTEGER DEFAULT 0,
                     status VARCHAR(20) DEFAULT 'pending'
                 )'''))
+            # Add missing columns to purchase_order_item (table may have been created incomplete)
+            conn.execute(db.text("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS po_id INTEGER REFERENCES purchase_order(id) ON DELETE CASCADE"))
+            conn.execute(db.text("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS product_id INTEGER"))
+            conn.execute(db.text("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS name VARCHAR(100)"))
+            conn.execute(db.text("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS flavor VARCHAR(100)"))
+            conn.execute(db.text("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS type VARCHAR(50)"))
+            conn.execute(db.text("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS ordered_qty INTEGER DEFAULT 0"))
+            conn.execute(db.text("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS received_qty INTEGER DEFAULT 0"))
+            conn.execute(db.text("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'"))
             # Backfill any legacy rows where po_number is NULL
             conn.execute(db.text(
                 "UPDATE purchase_order SET po_number = 'PO-LEGACY-' || id::text WHERE po_number IS NULL"
@@ -5084,7 +5093,7 @@ def _run_sql(sql):
         pass
 
 with app.app_context():
-    db.create_all()
+    # Backfill NULLs and create tables BEFORE db.create_all() to avoid unique constraint crash
     _run_sql("ALTER TABLE product ADD COLUMN IF NOT EXISTS discount FLOAT DEFAULT 0.0")
     _run_sql("ALTER TABLE product ADD COLUMN IF NOT EXISTS code_name VARCHAR(50)")
     _run_sql("""CREATE TABLE IF NOT EXISTS purchase_order (
@@ -5105,6 +5114,19 @@ with app.app_context():
         received_qty INTEGER DEFAULT 0,
         status VARCHAR(20) DEFAULT 'pending'
     )""")
+    # Add missing columns to purchase_order_item (in case table was created incomplete)
+    _run_sql("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS po_id INTEGER REFERENCES purchase_order(id) ON DELETE CASCADE")
+    _run_sql("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS product_id INTEGER")
+    _run_sql("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS name VARCHAR(100)")
+    _run_sql("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS flavor VARCHAR(100)")
+    _run_sql("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS type VARCHAR(50)")
+    _run_sql("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS ordered_qty INTEGER DEFAULT 0")
+    _run_sql("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS received_qty INTEGER DEFAULT 0")
+    _run_sql("ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'")
+    try:
+        db.create_all()
+    except Exception:
+        pass
 
 # --- 9. LOCAL DEV SERVER ---
 if __name__ == '__main__':
