@@ -502,6 +502,34 @@ def delete_purchase_order(po_id):
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+@app.route('/api/confirm_received', methods=['POST'])
+def confirm_received():
+    data = request.get_json()
+    items = data.get('items', [])
+    if not items:
+        return jsonify({'ok': False, 'error': 'No items provided'}), 400
+    try:
+        updated = 0
+        for it in items:
+            product_id = it.get('product_id')
+            qty = int(it.get('qty', 0))
+            if not product_id or qty <= 0:
+                continue
+            prod = db.session.get(Product, product_id)
+            if prod:
+                prod.qty += qty
+                db.session.add(StockInLog(
+                    name=prod.name, flavor=prod.flavor or '',
+                    category=prod.type or '', qty=qty
+                ))
+                updated += 1
+        db.session.commit()
+        return jsonify({'ok': True, 'updated': updated})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/api/low_stock')
 def api_low_stock():
     items = Product.query.filter(Product.qty < 5).order_by(Product.qty.asc()).limit(10).all()
@@ -4476,7 +4504,6 @@ TEMPLATES["purchase_report.html"] = """
 }
 .suggested-chip:hover { background: #e0d0f5; transform: scale(1.04); }
 
-
 /* ── GENERATE BUTTON ── */
 .gen-btn-wrap { text-align: center; margin: 6px 0 26px; }
 .gen-btn {
@@ -4533,6 +4560,86 @@ TEMPLATES["purchase_report.html"] = """
     display: flex; justify-content: space-between; font-size: .6rem; color: #94a3b8; flex-wrap: wrap; gap: 6px;
 }
 
+/* ── CHECKLIST ── */
+#checklist-area {
+    background: #fff; border: 1.5px solid var(--border); border-radius: var(--radius);
+    padding: 24px; margin-bottom: 24px; box-shadow: var(--shadow);
+    display: none;
+}
+.checklist-header {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 18px;
+    padding-bottom: 14px; border-bottom: 1.5px solid var(--border);
+}
+.checklist-header .ch-icon {
+    width: 42px; height: 42px; background: linear-gradient(135deg,#705194,#9b6fc4);
+    border-radius: 12px; display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 1.1rem; flex-shrink: 0;
+}
+.checklist-header h3 { font-size: 1rem; font-weight: 800; color: var(--text); margin: 0; }
+.checklist-header p  { font-size: .78rem; color: var(--muted); margin: 2px 0 0; }
+
+.checklist-item {
+    display: flex; align-items: center; gap: 14px;
+    padding: 13px 14px; border-radius: 12px; border: 1.5px solid var(--border);
+    margin-bottom: 10px; background: #fafaf9; cursor: pointer;
+    transition: border-color .18s, background .18s, box-shadow .18s;
+    user-select: none;
+}
+.checklist-item:hover { border-color: var(--brand); background: var(--brand-light); }
+.checklist-item.checked {
+    border-color: var(--green); background: #f0fdf4;
+    box-shadow: 0 2px 10px rgba(16,185,129,.1);
+}
+.checklist-item.checked .ci-box {
+    background: var(--green); border-color: var(--green); color: #fff;
+}
+.ci-box {
+    width: 26px; height: 26px; border-radius: 7px; border: 2px solid #cbd5e1;
+    display: flex; align-items: center; justify-content: center;
+    font-size: .85rem; flex-shrink: 0; transition: .18s; color: transparent;
+    background: #fff;
+}
+.ci-info { flex: 1; }
+.ci-name { font-size: .9rem; font-weight: 700; color: var(--text); }
+.ci-sub  { font-size: .73rem; color: var(--muted); margin-top: 2px; }
+.ci-qty  {
+    font-size: 1rem; font-weight: 800; color: var(--brand);
+    background: var(--brand-light); padding: 4px 12px;
+    border-radius: 8px; white-space: nowrap;
+}
+.checklist-item.checked .ci-qty { background: #dcfce7; color: #15803d; }
+.checklist-item.checked .ci-name { color: #15803d; }
+
+.checklist-progress {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 16px; font-size: .8rem; font-weight: 700; color: var(--muted);
+}
+.progress-bar-bg { flex: 1; height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; }
+.progress-bar-fill { height: 100%; background: var(--green); border-radius: 4px; transition: width .3s; }
+
+.checklist-actions { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+.btn-confirm-all {
+    background: var(--green); color: #fff; border: none; padding: 12px 24px;
+    border-radius: var(--radius-sm); font-size: .85rem; font-weight: 700; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px; transition: .18s;
+    box-shadow: 0 3px 10px rgba(16,185,129,.25);
+}
+.btn-confirm-all:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.btn-confirm-all:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+.btn-reset-list {
+    background: #f1f5f9; color: var(--muted); border: 1.5px solid var(--border);
+    padding: 12px 20px; border-radius: var(--radius-sm); font-size: .85rem;
+    font-weight: 700; cursor: pointer; transition: .15s;
+    display: inline-flex; align-items: center; gap: 7px;
+}
+.btn-reset-list:hover { background: #e2e8f0; color: var(--text); }
+
+.confirm-success-banner {
+    display: none; background: #f0fdf4; border: 1.5px solid #86efac;
+    border-radius: var(--radius-sm); padding: 14px 18px; margin-top: 16px;
+    display: none; align-items: center; gap: 10px; font-size: .88rem; font-weight: 700; color: #15803d;
+}
+
 /* ── STOCK-IN HISTORY ── */
 .history-table { width: 100%; border-collapse: collapse; min-width: 420px; }
 .history-table th {
@@ -4552,6 +4659,9 @@ TEMPLATES["purchase_report.html"] = """
     .pr-page-header { flex-direction: column; align-items: flex-start; }
     #po-area { padding: 14px 8px; border-left: none; border-right: none; }
     #po-area > div { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
+    #checklist-area { padding: 14px 10px; }
+    .checklist-actions { flex-direction: column; }
+    .btn-confirm-all, .btn-reset-list { width: 100%; justify-content: center; }
 }
 
 /* ── PRINT ── */
@@ -4562,6 +4672,7 @@ TEMPLATES["purchase_report.html"] = """
     #po-area { border: none; box-shadow: none; padding: 32px; }
     .rec-table-wrap, .alert-banner, .gen-btn-wrap, .sec-head { display: none !important; }
     #history-section { display: none !important; }
+    #checklist-area { display: none !important; }
 }
 </style>
 
@@ -4571,7 +4682,7 @@ TEMPLATES["purchase_report.html"] = """
   <div class="pr-page-header no-print">
     <div>
       <h1><i class="fas fa-basket-shopping" style="color:var(--brand);margin-right:8px;"></i>Purchase Report</h1>
-      <p>Recommendations based on Critical Stock Warnings from Reports &nbsp;·&nbsp; Products with fewer than 5 units</p>
+      <p>Recommendations based on Critical Stock Warnings from Reports &nbsp;&middot;&nbsp; Products with fewer than 5 units</p>
     </div>
     <div class="btn-group-top">
       <button onclick="window.print()" class="btn-tool btn-pdf"><i class="fas fa-file-pdf"></i> PDF</button>
@@ -4619,36 +4730,28 @@ TEMPLATES["purchase_report.html"] = """
       <tbody>
         {% for r in recommendations %}
         <tr>
-          <!-- Product name + flavor -->
           <td>
             <div style="font-weight:800;color:var(--text);">{{ r.name }}</div>
             <div style="font-size:.75rem;color:var(--muted);">
-              {{ r.flavor if r.flavor else '—' }}
-              {% if r.type %}&nbsp;·&nbsp;<span style="text-transform:capitalize;">{{ r.type }}</span>{% endif %}
+              {{ r.flavor if r.flavor else '&mdash;' }}
+              {% if r.type %}&nbsp;&middot;&nbsp;<span style="text-transform:capitalize;">{{ r.type }}</span>{% endif %}
             </div>
           </td>
-
-          <!-- Current stock -->
           <td style="text-align:center;">
             <span class="stock-pill {{ 'zero' if r.qty == 0 else 'low' }}">
               {% if r.qty == 0 %}<i class="fas fa-ban"></i>{% else %}<i class="fas fa-arrow-down"></i>{% endif %}
               {{ r.qty }} unit{{ 's' if r.qty != 1 }}
             </span>
           </td>
-
-          <!-- Velocity -->
           <td>
             <div style="font-weight:700;color:var(--text);">{{ r.sold30 }} sold in 30 days</div>
-            <div class="vel-info">≈ {{ r.daily_avg }}/day avg</div>
+            <div class="vel-info">&asymp; {{ r.daily_avg }}/day avg</div>
           </td>
-
-          <!-- Order qty stepper -->
           <td style="text-align:center;">
             <div class="stepper" style="justify-content:center;">
-              <button type="button" class="step-btn" onclick="adj({{ r.id }}, -1)">−</button>
+              <button type="button" class="step-btn" onclick="adj({{ r.id }}, -1)">&minus;</button>
               <input class="step-input" type="number" id="qty-{{ r.id }}"
-                     value="{{ r.suggested }}" min="0" max="9999"
->
+                     value="{{ r.suggested }}" min="0" max="9999">
               <button type="button" class="step-btn" onclick="adj({{ r.id }}, 1)">+</button>
             </div>
             <div style="text-align:center;margin-top:4px;">
@@ -4657,7 +4760,6 @@ TEMPLATES["purchase_report.html"] = """
               </span>
             </div>
           </td>
-
         </tr>
         {% endfor %}
       </tbody>
@@ -4679,7 +4781,7 @@ TEMPLATES["purchase_report.html"] = """
       <h2>F.L.E.X VAPE SHOP</h2>
       <p class="sub">Inventory Management System</p>
       <div class="doc-type">Purchase Order</div>
-      <div class="doc-date">Issued: {{ date }} &nbsp;·&nbsp; {{ now }}</div>
+      <div class="doc-date">Issued: {{ date }} &nbsp;&middot;&nbsp; {{ now }}</div>
     </div>
 
     <div class="po-notice">
@@ -4702,28 +4804,53 @@ TEMPLATES["purchase_report.html"] = """
         <tfoot>
           <tr>
             <td colspan="4" style="text-align:right;">Grand Total</td>
-            <td id="po-foot-qty" style="text-align:center;">—</td>
+            <td id="po-foot-qty" style="text-align:center;">&mdash;</td>
           </tr>
         </tfoot>
       </table>
     </div>
 
     <div class="po-footer">
-      <span>Generated: {{ now }} &nbsp;·&nbsp; Critical threshold: qty &lt; 5 units</span>
+      <span>Generated: {{ now }} &nbsp;&middot;&nbsp; Critical threshold: qty &lt; 5 units</span>
       <span>F.L.E.X System &bull; Purchase Record</span>
     </div>
   </div>
 
-  <div class="gen-btn-wrap no-print" style="margin-top:4px;">
-    <button id="save-po-btn" onclick="savePurchaseOrder()"
-      style="display:none;background:var(--green);color:#fff;border:none;padding:13px 28px;
-             border-radius:var(--radius);font-size:.9rem;font-weight:700;cursor:pointer;
-             align-items:center;gap:8px;box-shadow:0 4px 14px rgba(16,185,129,.25);transition:.2s;">
-      <i class="fas fa-floppy-disk"></i> Save &amp; Track Order
-    </button>
-    <p style="margin:8px 0 0;font-size:.75rem;color:var(--muted);">
-      Save this PO to track delivery and verify items when they arrive.
-    </p>
+  <!-- ORDER RECEIVED CHECKLIST -->
+  <div id="checklist-area">
+    <div class="checklist-header">
+      <div class="ch-icon"><i class="fas fa-clipboard-check"></i></div>
+      <div>
+        <h3>Order Received — Confirm Items</h3>
+        <p>Tick each item once you've verified it arrived. Confirmed items will be added to stock.</p>
+      </div>
+    </div>
+
+    <div class="checklist-progress no-print">
+      <span id="cl-progress-text">0 of 0 confirmed</span>
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="cl-progress-bar" style="width:0%;"></div>
+      </div>
+      <span id="cl-progress-pct">0%</span>
+    </div>
+
+    <div id="cl-items"></div>
+
+    <div class="checklist-actions no-print">
+      <button class="btn-confirm-all" id="cl-confirm-btn" onclick="confirmChecked()">
+        <i class="fas fa-boxes-stacked"></i> Confirm Checked &amp; Update Stock
+      </button>
+      <button class="btn-reset-list" onclick="resetChecklist()">
+        <i class="fas fa-rotate-left"></i> Reset
+      </button>
+    </div>
+
+    <div id="cl-success" style="display:none;background:#f0fdf4;border:1.5px solid #86efac;
+         border-radius:12px;padding:14px 18px;margin-top:16px;
+         align-items:center;gap:10px;font-size:.88rem;font-weight:700;color:#15803d;">
+      <i class="fas fa-circle-check" style="font-size:1.1rem;"></i>
+      <span id="cl-success-msg">Stock updated successfully!</span>
+    </div>
   </div>
 
   <!-- STOCK-IN HISTORY (last 30 days) -->
@@ -4748,8 +4875,8 @@ TEMPLATES["purchase_report.html"] = """
           <tr>
             <td style="white-space:nowrap;color:var(--muted);font-size:.72rem;">{{ log.date.strftime('%b %d, %Y %I:%M %p') }}</td>
             <td><strong>{{ log.name }}</strong></td>
-            <td style="color:var(--muted);">{{ log.flavor or '—' }}</td>
-            <td style="color:var(--muted);text-transform:capitalize;">{{ log.category or '—' }}</td>
+            <td style="color:var(--muted);">{{ log.flavor or '&mdash;' }}</td>
+            <td style="color:var(--muted);text-transform:capitalize;">{{ log.category or '&mdash;' }}</td>
             <td style="text-align:center;"><span class="in-badge">+{{ log.qty }}</span></td>
           </tr>
           {% else %}
@@ -4771,9 +4898,11 @@ function adj(id, d) {
 function setSug(id, v) {
   document.getElementById('qty-' + id).value = v;
 }
-/* ── generate purchase order ── */
+
+/* ── PO rows stored after generate ── */
 let _poRows = [];
 
+/* ── generate purchase order & show checklist ── */
 function generatePO() {
   _poRows = [];
   {% for r in recommendations %}
@@ -4792,10 +4921,10 @@ function generatePO() {
     return;
   }
 
+  /* Build PO document */
   const tbody = document.getElementById('po-tbody');
   tbody.innerHTML = '';
   let totQty = 0;
-
   _poRows.forEach((r, i) => {
     totQty += r.qty;
     const dot = r.stock === 0 ? 'po-dot-zero' : 'po-dot-low';
@@ -4803,47 +4932,127 @@ function generatePO() {
       <tr>
         <td>${i+1}</td>
         <td><strong>${r.name}</strong></td>
-        <td style="color:#64748b;">${r.flavor||'—'}${r.type?' · '+r.type:''}</td>
+        <td style="color:#64748b;">${r.flavor||'&mdash;'}${r.type?' &middot; '+r.type:''}</td>
         <td style="text-align:center;">
           <span class="po-dot ${dot}"></span>${r.stock} unit${r.stock!==1?'s':''}
         </td>
         <td style="text-align:center;font-weight:800;color:var(--brand);">${r.qty}</td>
       </tr>`;
   });
-
   document.getElementById('po-foot-qty').textContent = totQty + ' units';
-  const sb = document.getElementById('save-po-btn');
-  if (sb) { sb.style.display = 'inline-flex'; }
 
-  const area = document.getElementById('po-area');
-  area.style.display = 'block';
-  area.scrollIntoView({ behavior:'smooth', block:'start' });
+  const poArea = document.getElementById('po-area');
+  poArea.style.display = 'block';
+
+  /* Build checklist */
+  buildChecklist();
+
+  const clArea = document.getElementById('checklist-area');
+  clArea.style.display = 'block';
+  clArea.scrollIntoView({ behavior:'smooth', block:'start' });
 }
 
-async function savePurchaseOrder() {
-  if (!_poRows.length) { alert('Generate a Purchase Order first.'); return; }
-  const btn = document.getElementById('save-po-btn');
+/* ── Checklist logic ── */
+function buildChecklist() {
+  const container = document.getElementById('cl-items');
+  container.innerHTML = '';
+  _poRows.forEach((r, i) => {
+    const div = document.createElement('div');
+    div.className = 'checklist-item';
+    div.id = 'cl-item-' + i;
+    div.onclick = () => toggleItem(i);
+    div.innerHTML = `
+      <div class="ci-box" id="ci-box-${i}"><i class="fas fa-check"></i></div>
+      <div class="ci-info">
+        <div class="ci-name">${r.name}</div>
+        <div class="ci-sub">${r.flavor || ''}${r.type ? ' &middot; ' + r.type : ''}</div>
+      </div>
+      <div class="ci-qty" id="ci-qty-${i}">${r.qty} unit${r.qty!==1?'s':''} ordered</div>
+    `;
+    container.appendChild(div);
+  });
+  updateProgress();
+  document.getElementById('cl-success').style.display = 'none';
+  document.getElementById('cl-confirm-btn').disabled = false;
+  document.getElementById('cl-confirm-btn').innerHTML = '<i class="fas fa-boxes-stacked"></i> Confirm Checked &amp; Update Stock';
+}
+
+function toggleItem(i) {
+  const item = document.getElementById('cl-item-' + i);
+  item.classList.toggle('checked');
+  updateProgress();
+}
+
+function updateProgress() {
+  const items = document.querySelectorAll('.checklist-item');
+  const total = items.length;
+  const checked = document.querySelectorAll('.checklist-item.checked').length;
+  document.getElementById('cl-progress-text').textContent = checked + ' of ' + total + ' confirmed';
+  const pct = total ? Math.round(checked / total * 100) : 0;
+  document.getElementById('cl-progress-bar').style.width = pct + '%';
+  document.getElementById('cl-progress-pct').textContent = pct + '%';
+  document.getElementById('cl-confirm-btn').disabled = checked === 0;
+}
+
+function resetChecklist() {
+  document.querySelectorAll('.checklist-item').forEach(el => el.classList.remove('checked'));
+  updateProgress();
+  document.getElementById('cl-success').style.display = 'none';
+  document.getElementById('cl-confirm-btn').disabled = false;
+  document.getElementById('cl-confirm-btn').innerHTML = '<i class="fas fa-boxes-stacked"></i> Confirm Checked &amp; Update Stock';
+}
+
+async function confirmChecked() {
+  const checkedIndexes = [];
+  document.querySelectorAll('.checklist-item.checked').forEach(el => {
+    const idx = parseInt(el.id.replace('cl-item-', ''));
+    checkedIndexes.push(idx);
+  });
+
+  if (!checkedIndexes.length) {
+    alert('Please tick at least one item to confirm it was received.');
+    return;
+  }
+
+  const confirmedItems = checkedIndexes.map(i => ({
+    product_id: _poRows[i].product_id,
+    qty: _poRows[i].qty
+  }));
+
+  const btn = document.getElementById('cl-confirm-btn');
   btn.disabled = true;
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Updating stock...';
+
   try {
-    const res  = await fetch('/api/save_purchase_order', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ items: _poRows })
+    const res = await fetch('/api/confirm_received', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: confirmedItems })
     });
     const data = await res.json();
     if (data.ok) {
-      btn.innerHTML = '<i class="fas fa-check"></i> Saved as ' + data.po_number;
-      btn.style.background = 'var(--green)';
-      setTimeout(() => { window.location.href = '/receive_orders'; }, 1200);
+      const successDiv = document.getElementById('cl-success');
+      successDiv.style.display = 'flex';
+      document.getElementById('cl-success-msg').textContent =
+        data.updated + ' item' + (data.updated !== 1 ? 's' : '') + ' added to stock successfully!';
+      btn.innerHTML = '<i class="fas fa-check"></i> Stock Updated!';
+      btn.style.background = '#0d9488';
+      /* Mark confirmed items visually */
+      checkedIndexes.forEach(i => {
+        const qtyEl = document.getElementById('ci-qty-' + i);
+        if (qtyEl) qtyEl.textContent = '+ Added to Stock';
+      });
+      /* Reload after delay to refresh history */
+      setTimeout(() => location.reload(), 2000);
     } else {
-      alert('Save failed: ' + (data.error || 'Unknown error'));
+      alert('Error: ' + (data.error || 'Unknown error'));
       btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-floppy-disk"></i> Save & Track Order';
+      btn.innerHTML = '<i class="fas fa-boxes-stacked"></i> Confirm Checked &amp; Update Stock';
     }
   } catch(e) {
     alert('Network error: ' + e.message);
     btn.disabled = false;
-    btn.innerHTML = '<i class="fas fa-floppy-disk"></i> Save & Track Order';
+    btn.innerHTML = '<i class="fas fa-boxes-stacked"></i> Confirm Checked &amp; Update Stock';
   }
 }
 
@@ -4861,9 +5070,7 @@ async function downloadImage() {
   try {
     const canvas = await html2canvas(area, { scale:3, useCORS:true, backgroundColor:'#ffffff' });
     const dataUrl = canvas.toDataURL('image/png', 1.0);
-
     if (isMobile()) {
-      /* On mobile: show image in a fullscreen modal so user can long-press → Save */
       let overlay = document.getElementById('img-save-overlay');
       if (!overlay) {
         overlay = document.createElement('div');
@@ -4877,11 +5084,11 @@ async function downloadImage() {
           <div style="width:100%;max-width:480px;">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
               <span style="color:#fff;font-size:.9rem;font-weight:700;">
-                <i class="fas fa-hand-pointer"></i>&nbsp; Long-press the image → <em>Save</em>
+                <i class="fas fa-hand-pointer"></i>&nbsp; Long-press the image &rarr; <em>Save</em>
               </span>
               <button onclick="document.getElementById('img-save-overlay').remove()"
                 style="background:#fff2;border:none;color:#fff;font-size:1.2rem;
-                       border-radius:50%;width:32px;height:32px;cursor:pointer;line-height:1;">✕</button>
+                       border-radius:50%;width:32px;height:32px;cursor:pointer;line-height:1;">&times;</button>
             </div>
             <img id="img-save-preview" src="" alt="Purchase Order"
               style="width:100%;border-radius:10px;box-shadow:0 4px 32px rgba(0,0,0,.5);">
@@ -4891,7 +5098,6 @@ async function downloadImage() {
       document.getElementById('img-save-preview').src = dataUrl;
       overlay.style.display = 'flex';
     } else {
-      /* Desktop: normal download */
       const a = document.createElement('a');
       a.href     = dataUrl;
       a.download = 'FLEX_PurchaseOrder_{{ date }}.png';
