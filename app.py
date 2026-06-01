@@ -75,6 +75,7 @@ class StockOutLog(db.Model):
     cost = db.Column(db.Float, default=0.0)
 
 class PurchaseOrder(db.Model):
+    __tablename__ = 'purchase_order'
     id         = db.Column(db.Integer, primary_key=True)
     po_number  = db.Column(db.String(30), unique=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.now)
@@ -82,9 +83,10 @@ class PurchaseOrder(db.Model):
     items      = db.relationship('PurchaseOrderItem', backref='order', lazy=True, cascade='all,delete-orphan')
 
 class PurchaseOrderItem(db.Model):
+    __tablename__ = 'purchase_order_item'
     id           = db.Column(db.Integer, primary_key=True)
     po_id        = db.Column(db.Integer, db.ForeignKey('purchase_order.id'), nullable=False)
-    product_id   = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=True)
+    product_id   = db.Column(db.Integer, nullable=True)
     name         = db.Column(db.String(100))
     flavor       = db.Column(db.String(100))
     type         = db.Column(db.String(50))
@@ -351,68 +353,116 @@ def purchase_report():
     )
 
 
+def _ensure_po_tables():
+    """Create purchase_order tables if missing — called lazily on first use."""
+    try:
+        with db.engine.connect() as conn:
+            conn.execute(db.text('''
+                CREATE TABLE IF NOT EXISTS purchase_order (
+                    id SERIAL PRIMARY KEY,
+                    po_number VARCHAR(30) UNIQUE NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    status VARCHAR(20) DEFAULT 'pending'
+                )'''))
+            conn.execute(db.text('''
+                CREATE TABLE IF NOT EXISTS purchase_order_item (
+                    id SERIAL PRIMARY KEY,
+                    po_id INTEGER NOT NULL REFERENCES purchase_order(id) ON DELETE CASCADE,
+                    product_id INTEGER,
+                    name VARCHAR(100),
+                    flavor VARCHAR(100),
+                    type VARCHAR(50),
+                    ordered_qty INTEGER DEFAULT 0,
+                    received_qty INTEGER DEFAULT 0,
+                    status VARCHAR(20) DEFAULT 'pending'
+                )'''))
+            conn.commit()
+    except Exception:
+        pass
+
+
+@app.route('/receive_orders')
+def receive_orders():
+    _ensure_po_tables()
+    try:
+        orders = PurchaseOrder.query.order_by(PurchaseOrder.created_at.desc()).all()
+    except Exception:
+        orders = []
+    return render_template('receive_orders.html', orders=orders)
+
+
 @app.route('/api/save_purchase_order', methods=['POST'])
 def save_purchase_order():
+    _ensure_po_tables()
     data  = request.get_json()
     items = data.get('items', [])
     if not items:
         return jsonify({'ok': False, 'error': 'No items'}), 400
-    po_num = 'PO-' + datetime.now().strftime('%Y%m%d-%H%M%S')
-    po = PurchaseOrder(po_number=po_num, status='pending')
-    db.session.add(po)
-    db.session.flush()
-    for it in items:
-        db.session.add(PurchaseOrderItem(
-            po_id=po.id, product_id=it.get('product_id'),
-            name=it.get('name',''), flavor=it.get('flavor',''),
-            type=it.get('type',''), ordered_qty=int(it.get('qty',0)),
-        ))
-    db.session.commit()
-    return jsonify({'ok': True, 'po_number': po_num, 'po_id': po.id})
+    try:
+        po_num = 'PO-' + datetime.now().strftime('%Y%m%d-%H%M%S')
+        po = PurchaseOrder(po_number=po_num, status='pending')
+        db.session.add(po)
+        db.session.flush()
+        for it in items:
+            db.session.add(PurchaseOrderItem(
+                po_id=po.id, product_id=it.get('product_id'),
+                name=it.get('name',''), flavor=it.get('flavor',''),
+                type=it.get('type',''), ordered_qty=int(it.get('qty',0)),
+            ))
+        db.session.commit()
+        return jsonify({'ok': True, 'po_number': po_num, 'po_id': po.id})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/receive_order/<int:po_id>', methods=['POST'])
 def receive_order(po_id):
     data  = request.get_json()
     items = data.get('items', [])
-    po    = db.session.get(PurchaseOrder, po_id)
-    if not po:
-        return jsonify({'ok': False, 'error': 'PO not found'}), 404
-    for it in items:
-        poi  = db.session.get(PurchaseOrderItem, it['item_id'])
-        if not poi or poi.po_id != po_id:
-            continue
-        recv = max(0, int(it.get('received_qty', 0)))
-        poi.received_qty = recv
-        poi.status = 'received' if recv >= poi.ordered_qty else ('short' if recv > 0 else 'pending')
-        if recv > 0 and poi.product_id:
-            prod = db.session.get(Product, poi.product_id)
-            if prod:
-                prod.qty += recv
-                db.session.add(StockInLog(name=prod.name, flavor=prod.flavor or '', category=prod.type or '', qty=recv))
-    all_items = PurchaseOrderItem.query.filter_by(po_id=po_id).all()
-    statuses  = {i.status for i in all_items}
-    if 'pending' not in statuses and 'short' not in statuses:
-        po.status = 'received'
-    elif any(i.received_qty > 0 for i in all_items):
-        po.status = 'partial'
-    db.session.commit()
-    return jsonify({'ok': True, 'po_status': po.status})
+    try:
+        po = db.session.get(PurchaseOrder, po_id)
+        if not po:
+            return jsonify({'ok': False, 'error': 'PO not found'}), 404
+        for it in items:
+            poi  = db.session.get(PurchaseOrderItem, it['item_id'])
+            if not poi or poi.po_id != po_id:
+                continue
+            recv = max(0, int(it.get('received_qty', 0)))
+            poi.received_qty = recv
+            poi.status = 'received' if recv >= poi.ordered_qty else ('short' if recv > 0 else 'pending')
+            if recv > 0 and poi.product_id:
+                prod = db.session.get(Product, poi.product_id)
+                if prod:
+                    prod.qty += recv
+                    db.session.add(StockInLog(
+                        name=prod.name, flavor=prod.flavor or '',
+                        category=prod.type or '', qty=recv
+                    ))
+        all_items = PurchaseOrderItem.query.filter_by(po_id=po_id).all()
+        statuses  = {i.status for i in all_items}
+        if 'pending' not in statuses and 'short' not in statuses:
+            po.status = 'received'
+        elif any(i.received_qty > 0 for i in all_items):
+            po.status = 'partial'
+        db.session.commit()
+        return jsonify({'ok': True, 'po_status': po.status})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/delete_purchase_order/<int:po_id>', methods=['POST'])
 def delete_purchase_order(po_id):
-    po = db.session.get(PurchaseOrder, po_id)
-    if po:
-        db.session.delete(po)
-        db.session.commit()
-    return jsonify({'ok': True})
-
-
-@app.route('/receive_orders')
-def receive_orders():
-    orders = PurchaseOrder.query.order_by(PurchaseOrder.created_at.desc()).all()
-    return render_template('receive_orders.html', orders=orders)
+    try:
+        po = db.session.get(PurchaseOrder, po_id)
+        if po:
+            db.session.delete(po)
+            db.session.commit()
+        return jsonify({'ok': True})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/low_stock')
@@ -4627,7 +4677,6 @@ TEMPLATES["purchase_report.html"] = """
     </div>
   </div>
 
-  <!-- SAVE & TRACK BUTTON -->
   <div class="gen-btn-wrap no-print" style="margin-top:4px;">
     <button id="save-po-btn" onclick="savePurchaseOrder()"
       style="display:none;background:var(--green);color:#fff;border:none;padding:13px 28px;
@@ -4726,8 +4775,8 @@ function generatePO() {
   });
 
   document.getElementById('po-foot-qty').textContent = totQty + ' units';
-  const savebtn = document.getElementById('save-po-btn');
-  if (savebtn) { savebtn.style.display = 'inline-flex'; }
+  const sb = document.getElementById('save-po-btn');
+  if (sb) { sb.style.display = 'inline-flex'; }
 
   const area = document.getElementById('po-area');
   area.style.display = 'block';
@@ -4826,7 +4875,7 @@ TEMPLATES["receive_orders.html"] = """
 {% extends "base.html" %}
 {% block content %}
 <style>
-:root{--brand:#7051a0;--brand-light:#f3eeff;--green:#10b981;--red:#ef4444;--orange:#f59e0b;--navy:#1e293b;--border:#e2e8f0;--shadow:0 2px 12px rgba(0,0,0,.07);--radius:14px;--muted:#94a3b8;--text:#1e293b;}
+:root{--brand:#7051a0;--brand-light:#f3eeff;--green:#10b981;--red:#ef4444;--navy:#1e293b;--border:#e2e8f0;--shadow:0 2px 12px rgba(0,0,0,.07);--radius:14px;--muted:#94a3b8;}
 .ro-wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px;}
 .ro-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:24px;}
 .ro-header h1{margin:0;font-size:1.4rem;font-weight:800;color:var(--navy);display:flex;align-items:center;gap:10px;}
@@ -4844,7 +4893,7 @@ TEMPLATES["receive_orders.html"] = """
 .po-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
 .chevron{transition:transform .25s;font-size:.75rem;color:var(--muted);}
 .po-card-body{padding:0 18px 18px;}
-.verify-table{width:100%;border-collapse:collapse;margin-top:14px;}
+.verify-table{width:100%;border-collapse:collapse;margin-top:14px;min-width:480px;}
 .verify-table th{background:#f1f5f9;font-size:.67rem;color:#475569;text-transform:uppercase;padding:8px 10px;border:1px solid var(--border);}
 .verify-table td{padding:9px 10px;font-size:.8rem;border:1px solid var(--border);vertical-align:middle;}
 .verify-table tbody tr:nth-child(even){background:#fafafa;}
@@ -4862,15 +4911,13 @@ TEMPLATES["receive_orders.html"] = """
 .btn-delete:hover{background:#fee2e2;}
 .empty-state{text-align:center;padding:60px 20px;color:var(--muted);}
 .empty-state i{font-size:2.5rem;margin-bottom:12px;display:block;}
-@media(max-width:600px){.ro-wrap{padding:12px 8px 40px;}.verify-table{min-width:480px;}.po-card-body>div{overflow-x:auto;-webkit-overflow-scrolling:touch;}}
+@media(max-width:600px){.ro-wrap{padding:12px 8px 40px;}.po-card-body>div{overflow-x:auto;-webkit-overflow-scrolling:touch;}}
 </style>
-
 <div class="ro-wrap">
   <div class="ro-header">
     <h1><i class="fas fa-truck-ramp-box" style="color:var(--brand);"></i> Receive Orders</h1>
     <a href="/purchase_report" class="ro-back"><i class="fas fa-arrow-left"></i> Purchase Report</a>
   </div>
-
   {% if not orders %}
   <div class="empty-state">
     <i class="fas fa-box-open"></i>
@@ -4907,7 +4954,7 @@ TEMPLATES["receive_orders.html"] = """
           </thead>
           <tbody>
             {% for it in po.items %}
-            <tr id="row-{{ it.id }}">
+            <tr>
               <td>{{ loop.index }}</td>
               <td><strong>{{ it.name }}</strong></td>
               <td style="color:#64748b;">{{ it.flavor or '—' }}{% if it.type %} · {{ it.type }}{% endif %}</td>
@@ -4953,7 +5000,6 @@ TEMPLATES["receive_orders.html"] = """
   {% endfor %}
   {% endif %}
 </div>
-
 <script>
 function toggleCard(id) {
   const body = document.getElementById('body-' + id);
@@ -5020,43 +5066,33 @@ try:
 except Exception:
     pass  # Flask-Migrate optional; skip if it causes issues in serverless
 
+def _run_sql(sql):
+    try:
+        with db.engine.connect() as conn:
+            conn.execute(db.text(sql))
+            conn.commit()
+    except Exception:
+        pass
+
 with app.app_context():
     db.create_all()
-
-    # Each migration runs in its own connection so one failure never blocks the rest
-    def _run_sql(sql):
-        try:
-            with db.engine.connect() as conn:
-                conn.execute(db.text(sql))
-                conn.commit()
-        except Exception:
-            pass  # Already exists or not supported — safe to ignore
-
     _run_sql("ALTER TABLE product ADD COLUMN IF NOT EXISTS discount FLOAT DEFAULT 0.0")
     _run_sql("ALTER TABLE product ADD COLUMN IF NOT EXISTS code_name VARCHAR(50)")
-
-    _run_sql("""
-        CREATE TABLE IF NOT EXISTS purchase_order (
-            id         SERIAL PRIMARY KEY,
-            po_number  VARCHAR(30) UNIQUE NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW(),
-            status     VARCHAR(20) DEFAULT 'pending'
-        )
-    """)
-
-    _run_sql("""
-        CREATE TABLE IF NOT EXISTS purchase_order_item (
-            id           SERIAL PRIMARY KEY,
-            po_id        INTEGER NOT NULL REFERENCES purchase_order(id) ON DELETE CASCADE,
-            product_id   INTEGER REFERENCES product(id) ON DELETE SET NULL,
-            name         VARCHAR(100),
-            flavor       VARCHAR(100),
-            type         VARCHAR(50),
-            ordered_qty  INTEGER DEFAULT 0,
-            received_qty INTEGER DEFAULT 0,
-            status       VARCHAR(20) DEFAULT 'pending'
-        )
-    """)
+    _run_sql("""CREATE TABLE IF NOT EXISTS purchase_order (
+        id SERIAL PRIMARY KEY,
+        po_number VARCHAR(30) UNIQUE NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        status VARCHAR(20) DEFAULT 'pending'
+    )""")
+    _run_sql("""CREATE TABLE IF NOT EXISTS purchase_order_item (
+        id SERIAL PRIMARY KEY,
+        po_id INTEGER NOT NULL REFERENCES purchase_order(id) ON DELETE CASCADE,
+        product_id INTEGER,
+        name VARCHAR(100), flavor VARCHAR(100), type VARCHAR(50),
+        ordered_qty INTEGER DEFAULT 0,
+        received_qty INTEGER DEFAULT 0,
+        status VARCHAR(20) DEFAULT 'pending'
+    )""")
 
 # --- 9. LOCAL DEV SERVER ---
 if __name__ == '__main__':
