@@ -360,12 +360,12 @@ def _ensure_po_tables():
             conn.execute(db.text('''
                 CREATE TABLE IF NOT EXISTS purchase_order (
                     id SERIAL PRIMARY KEY,
+                    po_number VARCHAR(30),
                     created_at TIMESTAMP DEFAULT NOW(),
                     status VARCHAR(20) DEFAULT 'pending'
                 )'''))
             # Add columns that may be missing on existing tables
             conn.execute(db.text("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS po_number VARCHAR(30)"))
-            conn.execute(db.text("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()"))
             conn.execute(db.text("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'"))
             conn.execute(db.text('''
                 CREATE TABLE IF NOT EXISTS purchase_order_item (
@@ -379,9 +379,13 @@ def _ensure_po_tables():
                     received_qty INTEGER DEFAULT 0,
                     status VARCHAR(20) DEFAULT 'pending'
                 )'''))
+            # Backfill any legacy rows where po_number is NULL
+            conn.execute(db.text(
+                "UPDATE purchase_order SET po_number = 'PO-LEGACY-' || id::text WHERE po_number IS NULL"
+            ))
             conn.commit()
     except Exception:
-        pass
+        db.session.rollback()  # Clear any aborted transaction state
 
 
 @app.route('/receive_orders')
@@ -5084,12 +5088,13 @@ with app.app_context():
     _run_sql("ALTER TABLE product ADD COLUMN IF NOT EXISTS code_name VARCHAR(50)")
     _run_sql("""CREATE TABLE IF NOT EXISTS purchase_order (
         id SERIAL PRIMARY KEY,
+        po_number VARCHAR(30),
         created_at TIMESTAMP DEFAULT NOW(),
         status VARCHAR(20) DEFAULT 'pending'
     )""")
     _run_sql("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS po_number VARCHAR(30)")
-    _run_sql("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()")
     _run_sql("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'")
+    _run_sql("UPDATE purchase_order SET po_number = 'PO-LEGACY-' || id::text WHERE po_number IS NULL")
     _run_sql("""CREATE TABLE IF NOT EXISTS purchase_order_item (
         id SERIAL PRIMARY KEY,
         po_id INTEGER NOT NULL REFERENCES purchase_order(id) ON DELETE CASCADE,
