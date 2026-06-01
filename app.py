@@ -74,6 +74,25 @@ class StockOutLog(db.Model):
     price = db.Column(db.Float, default=0.0)
     cost = db.Column(db.Float, default=0.0)
 
+
+class PurchaseOrder(db.Model):
+    id         = db.Column(db.Integer, primary_key=True)
+    po_number  = db.Column(db.String(30), unique=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.now)
+    status     = db.Column(db.String(20), default='pending')  # pending | partial | received
+    items      = db.relationship('PurchaseOrderItem', backref='order', lazy=True, cascade='all,delete-orphan')
+
+class PurchaseOrderItem(db.Model):
+    id         = db.Column(db.Integer, primary_key=True)
+    po_id      = db.Column(db.Integer, db.ForeignKey('purchase_order.id'), nullable=False)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=True)
+    name       = db.Column(db.String(100))
+    flavor     = db.Column(db.String(100))
+    type       = db.Column(db.String(50))
+    ordered_qty= db.Column(db.Integer, default=0)
+    received_qty= db.Column(db.Integer, default=0)
+    status     = db.Column(db.String(20), default='pending')  # pending | received | short
+
 # --- 3. LOGIN PROTECTION ---
 # Set FLEX_USER and FLEX_PASS environment variables in production.
 ADMIN_USER = os.environ.get("FLEX_USER", "flexinventory")
@@ -332,6 +351,84 @@ def purchase_report():
         now=now_dt.strftime("%H:%M"),
     )
 
+
+
+
+@app.route('/api/save_purchase_order', methods=['POST'])
+def save_purchase_order():
+    data = request.get_json()
+    items = data.get('items', [])
+    if not items:
+        return jsonify({'ok': False, 'error': 'No items'}), 400
+
+    from datetime import datetime
+    po_num = 'PO-' + datetime.now().strftime('%Y%m%d-%H%M%S')
+    po = PurchaseOrder(po_number=po_num, status='pending')
+    db.session.add(po)
+    db.session.flush()  # get po.id
+
+    for it in items:
+        db.session.add(PurchaseOrderItem(
+            po_id      = po.id,
+            product_id = it.get('product_id'),
+            name       = it.get('name', ''),
+            flavor     = it.get('flavor', ''),
+            type       = it.get('type', ''),
+            ordered_qty= int(it.get('qty', 0)),
+        ))
+    db.session.commit()
+    return jsonify({'ok': True, 'po_number': po_num, 'po_id': po.id})
+
+
+@app.route('/api/receive_order/<int:po_id>', methods=['POST'])
+def receive_order(po_id):
+    data  = request.get_json()
+    items = data.get('items', [])   # [{item_id, received_qty}, ...]
+    po    = db.session.get(PurchaseOrder, po_id)
+    if not po:
+        return jsonify({'ok': False, 'error': 'PO not found'}), 404
+
+    for it in items:
+        poi = db.session.get(PurchaseOrderItem, it['item_id'])
+        if not poi or poi.po_id != po_id:
+            continue
+        recv = max(0, int(it.get('received_qty', 0)))
+        poi.received_qty = recv
+        poi.status = 'received' if recv >= poi.ordered_qty else ('short' if recv > 0 else 'pending')
+
+        if recv > 0 and poi.product_id:
+            prod = db.session.get(Product, poi.product_id)
+            if prod:
+                prod.qty += recv
+                db.session.add(StockInLog(
+                    name=prod.name, flavor=prod.flavor or '',
+                    category=prod.type or '', qty=recv
+                ))
+
+    all_items = PurchaseOrderItem.query.filter_by(po_id=po_id).all()
+    statuses  = {i.status for i in all_items}
+    if 'pending' not in statuses and 'short' not in statuses:
+        po.status = 'received'
+    elif any(i.received_qty > 0 for i in all_items):
+        po.status = 'partial'
+
+    db.session.commit()
+    return jsonify({'ok': True, 'po_status': po.status})
+
+
+@app.route('/api/delete_purchase_order/<int:po_id>', methods=['POST'])
+def delete_purchase_order(po_id):
+    po = db.session.get(PurchaseOrder, po_id)
+    if po:
+        db.session.delete(po)
+        db.session.commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/receive_orders')
+def receive_orders():
+    orders = PurchaseOrder.query.order_by(PurchaseOrder.created_at.desc()).all()
+    return render_template('receive_orders.html', orders=orders)
 
 @app.route('/api/low_stock')
 def api_low_stock():
@@ -1137,6 +1234,7 @@ TEMPLATES["base.html"] = """
             <li><a href="/products" class="{{ 'active' if request.path == '/products' }}"><i class="fa-solid fa-tags"></i> <span>Products</span></a></li>
             <li><a href="/reports" class="{{ 'active' if request.path == '/reports' }}"><i class="fa-solid fa-file-waveform"></i> <span>Reports</span></a></li>
             <li><a href="/purchase_report" class="{{ 'active' if request.path == '/purchase_report' }}"><i class="fa-solid fa-basket-shopping"></i> <span>Purchase Report</span></a></li>
+            <li><a href="/receive_orders" class="{{ 'active' if request.path == '/receive_orders' }}"><i class="fa-solid fa-truck-ramp-box"></i> <span>Receive Orders</span></a></li>
             <li><a href="/analytics" class="{{ 'active' if request.path == '/analytics' }}"><i class="fa-solid fa-chart-line"></i> <span>Analytics</span></a></li>
             <li><a href="/settings" class="{{ 'active' if request.path == '/settings' }}"><i class="fa-solid fa-gear"></i> <span>Settings</span></a></li>
         </ul>
@@ -4544,6 +4642,19 @@ TEMPLATES["purchase_report.html"] = """
     </div>
   </div>
 
+  <!-- SAVE PO BUTTON -->
+  <div class="gen-btn-wrap no-print" style="margin-top:0;">
+    <button id="save-po-btn" onclick="savePurchaseOrder()"
+      style="display:none;background:var(--green);color:#fff;border:none;padding:13px 28px;
+             border-radius:var(--radius);font-size:.9rem;font-weight:700;cursor:pointer;
+             display:none;align-items:center;gap:8px;box-shadow:0 4px 14px rgba(16,185,129,.25);transition:.2s;">
+      <i class="fas fa-floppy-disk"></i> Save &amp; Track Order
+    </button>
+    <p style="margin:8px 0 0;font-size:.75rem;color:var(--muted);">
+      Save this PO to track delivery and verify items when they arrive.
+    </p>
+  </div>
+
   <!-- STOCK-IN HISTORY (last 30 days) -->
   <div id="history-section">
     <div class="sec-head">
@@ -4590,19 +4701,22 @@ function setSug(id, v) {
   document.getElementById('qty-' + id).value = v;
 }
 /* ── generate purchase order ── */
+let _poRows = [];  // saved for Save PO
+
 function generatePO() {
-  const rows = [];
+  _poRows = [];
   {% for r in recommendations %}
   (function(){
     const qty = parseInt(document.getElementById('qty-{{ r.id }}')?.value) || 0;
-    if (qty > 0) rows.push({
+    if (qty > 0) _poRows.push({
+      product_id: {{ r.id }},
       name:'{{ r.name|e }}', flavor:'{{ r.flavor|e }}', type:'{{ r.type|e }}',
       stock:{{ r.qty }}, qty
     });
   })();
   {% endfor %}
 
-  if (!rows.length) {
+  if (!_poRows.length) {
     alert('All order quantities are 0. Please enter how many units you need to purchase.');
     return;
   }
@@ -4611,10 +4725,9 @@ function generatePO() {
   tbody.innerHTML = '';
   let totQty = 0;
 
-  rows.forEach((r, i) => {
-    totQty  += r.qty;
+  _poRows.forEach((r, i) => {
+    totQty += r.qty;
     const dot = r.stock === 0 ? 'po-dot-zero' : 'po-dot-low';
-    const lbl = r.stock === 0 ? 'Out of Stock' : 'Critical';
     tbody.innerHTML += `
       <tr>
         <td>${i+1}</td>
@@ -4627,11 +4740,39 @@ function generatePO() {
       </tr>`;
   });
 
-  document.getElementById('po-foot-qty').textContent  = totQty + ' units';
+  document.getElementById('po-foot-qty').textContent = totQty + ' units';
+  document.getElementById('save-po-btn').style.display = 'inline-flex';
 
   const area = document.getElementById('po-area');
   area.style.display = 'block';
   area.scrollIntoView({ behavior:'smooth', block:'start' });
+}
+
+async function savePurchaseOrder() {
+  if (!_poRows.length) { alert('Generate a Purchase Order first.'); return; }
+  const btn = document.getElementById('save-po-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+  try {
+    const res  = await fetch('/api/save_purchase_order', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ items: _poRows })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      btn.innerHTML = '<i class="fas fa-check"></i> Saved as ' + data.po_number;
+      btn.style.background = 'var(--green)';
+      setTimeout(() => { window.location.href = '/receive_orders'; }, 1200);
+    } else {
+      alert('Save failed: ' + (data.error || 'Unknown error'));
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-floppy-disk"></i> Save & Track Order';
+    }
+  } catch(e) {
+    alert('Network error: ' + e.message);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-floppy-disk"></i> Save & Track Order';
+  }
 }
 
 /* ── image export ── */
@@ -4694,6 +4835,245 @@ async function downloadImage() {
 {% endblock %}
 """
 
+
+TEMPLATES["receive_orders.html"] = """
+{% extends "base.html" %}
+{% block content %}
+<style>
+:root {
+  --brand:#7051a0; --brand-light:#f3eeff; --green:#10b981; --red:#ef4444;
+  --orange:#f59e0b; --navy:#1e293b; --border:#e2e8f0; --shadow:0 2px 12px rgba(0,0,0,.07);
+  --radius:14px; --muted:#94a3b8; --text:#1e293b;
+}
+
+.ro-wrap { max-width:860px; margin:0 auto; padding:24px 16px 48px; }
+.ro-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:24px; }
+.ro-header h1 { margin:0; font-size:1.4rem; font-weight:800; color:var(--navy); display:flex; align-items:center; gap:10px; }
+.ro-back { text-decoration:none; color:var(--brand); font-size:.82rem; font-weight:700;
+           display:inline-flex; align-items:center; gap:6px; padding:8px 14px;
+           border:1.5px solid var(--brand); border-radius:99px; transition:.15s; }
+.ro-back:hover { background:var(--brand-light); }
+
+/* Status badge */
+.badge { display:inline-block; padding:3px 11px; border-radius:99px; font-size:.7rem; font-weight:700; }
+.badge-pending  { background:#fef9c3; color:#854d0e; border:1px solid #fde047; }
+.badge-partial  { background:#dbeafe; color:#1d4ed8; border:1px solid #93c5fd; }
+.badge-received { background:#dcfce7; color:#166534; border:1px solid #86efac; }
+
+/* PO Card */
+.po-card { background:#fff; border:1.5px solid var(--border); border-radius:var(--radius);
+           margin-bottom:20px; box-shadow:var(--shadow); overflow:hidden; }
+.po-card-head { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap;
+                gap:10px; padding:14px 18px; background:#f8f7ff;
+                border-bottom:1.5px solid var(--border); cursor:pointer; user-select:none; }
+.po-card-head:hover { background:#ede9f9; }
+.po-num   { font-weight:800; color:var(--navy); font-size:.95rem; }
+.po-date  { font-size:.75rem; color:var(--muted); }
+.po-meta  { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.chevron  { transition:transform .25s; font-size:.75rem; color:var(--muted); }
+.po-card-body { padding:0 18px 18px; }
+
+/* Items table */
+.verify-table { width:100%; border-collapse:collapse; margin-top:14px; }
+.verify-table th { background:#f1f5f9; font-size:.67rem; color:#475569; text-transform:uppercase;
+                   padding:8px 10px; border:1px solid var(--border); }
+.verify-table td { padding:9px 10px; font-size:.8rem; border:1px solid var(--border); vertical-align:middle; }
+.verify-table tbody tr:nth-child(even) { background:#fafafa; }
+
+.recv-input { width:70px; text-align:center; border:1.5px solid var(--brand); border-radius:8px;
+              padding:5px 4px; font-size:.85rem; font-weight:700; outline:none; }
+.recv-input:focus { box-shadow:0 0 0 3px rgba(112,81,148,.15); }
+
+.item-status { display:inline-block; padding:2px 8px; border-radius:99px; font-size:.67rem; font-weight:700; }
+.is-pending  { background:#fef9c3; color:#854d0e; }
+.is-received { background:#dcfce7; color:#166534; }
+.is-short    { background:#fee2e2; color:#991b1b; }
+
+/* Action row */
+.po-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
+.btn-receive { background:var(--green); color:#fff; border:none; padding:10px 22px;
+               border-radius:var(--radius); font-size:.85rem; font-weight:700; cursor:pointer;
+               display:inline-flex; align-items:center; gap:7px; transition:.2s; }
+.btn-receive:hover { filter:brightness(1.08); transform:translateY(-1px); }
+.btn-receive:disabled { opacity:.6; cursor:not-allowed; transform:none; }
+.btn-delete  { background:#fff; color:var(--red); border:1.5px solid var(--red); padding:10px 18px;
+               border-radius:var(--radius); font-size:.85rem; font-weight:700; cursor:pointer;
+               display:inline-flex; align-items:center; gap:7px; transition:.2s; }
+.btn-delete:hover { background:#fee2e2; }
+
+.empty-state { text-align:center; padding:60px 20px; color:var(--muted); }
+.empty-state i { font-size:2.5rem; margin-bottom:12px; display:block; }
+.empty-state p { margin:0; font-size:.9rem; }
+
+@media (max-width:600px) {
+  .ro-wrap { padding:12px 8px 40px; }
+  .verify-table { min-width:480px; }
+  .po-card-body > div { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+}
+</style>
+
+<div class="ro-wrap">
+  <div class="ro-header">
+    <h1><i class="fas fa-truck-ramp-box" style="color:var(--brand);"></i> Receive Orders</h1>
+    <a href="/purchase_report" class="ro-back"><i class="fas fa-arrow-left"></i> Purchase Report</a>
+  </div>
+
+  {% if not orders %}
+  <div class="empty-state">
+    <i class="fas fa-box-open"></i>
+    <p>No purchase orders yet.<br>Generate one from the <a href="/purchase_report" style="color:var(--brand);font-weight:700;">Purchase Report</a> page.</p>
+  </div>
+  {% else %}
+
+  {% for po in orders %}
+  <div class="po-card" id="po-card-{{ po.id }}">
+    <div class="po-card-head" onclick="toggleCard({{ po.id }})">
+      <div>
+        <div class="po-num"><i class="fas fa-file-invoice" style="color:var(--brand);margin-right:6px;"></i>{{ po.po_number }}</div>
+        <div class="po-date">{{ po.created_at.strftime('%b %d, %Y · %H:%M') }}</div>
+      </div>
+      <div class="po-meta">
+        <span class="badge badge-{{ po.status }}">
+          {% if po.status == 'pending' %}<i class="fas fa-clock"></i> Pending
+          {% elif po.status == 'partial' %}<i class="fas fa-circle-half-stroke"></i> Partial
+          {% else %}<i class="fas fa-circle-check"></i> Received{% endif %}
+        </span>
+        <span style="font-size:.75rem;color:var(--muted);">{{ po.items|length }} item{{ 's' if po.items|length != 1 }}</span>
+        <i class="fas fa-chevron-down chevron" id="chev-{{ po.id }}"></i>
+      </div>
+    </div>
+
+    <div class="po-card-body" id="body-{{ po.id }}" style="display:none;">
+      <div>
+        <table class="verify-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Product</th>
+              <th>Flavor / Type</th>
+              <th style="text-align:center;">Ordered</th>
+              <th style="text-align:center;">Received Qty</th>
+              <th style="text-align:center;">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for it in po.items %}
+            <tr id="row-{{ it.id }}">
+              <td>{{ loop.index }}</td>
+              <td><strong>{{ it.name }}</strong></td>
+              <td style="color:#64748b;">{{ it.flavor or '—' }}{% if it.type %} · {{ it.type }}{% endif %}</td>
+              <td style="text-align:center;font-weight:700;">{{ it.ordered_qty }}</td>
+              <td style="text-align:center;">
+                {% if po.status == 'received' %}
+                  <span style="font-weight:800;color:var(--green);">{{ it.received_qty }}</span>
+                {% else %}
+                  <input class="recv-input" type="number" min="0" max="999"
+                    id="recv-{{ it.id }}"
+                    value="{{ it.received_qty if it.received_qty > 0 else it.ordered_qty }}"
+                    placeholder="{{ it.ordered_qty }}">
+                {% endif %}
+              </td>
+              <td style="text-align:center;">
+                <span class="item-status is-{{ it.status }}">
+                  {% if it.status == 'received' %}<i class="fas fa-check"></i> Received
+                  {% elif it.status == 'short' %}<i class="fas fa-triangle-exclamation"></i> Short
+                  {% else %}<i class="fas fa-clock"></i> Pending{% endif %}
+                </span>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="po-actions">
+        {% if po.status != 'received' %}
+        <button class="btn-receive" id="recv-btn-{{ po.id }}"
+          onclick="receiveOrder({{ po.id }}, [{% for it in po.items %}{{ it.id }}{% if not loop.last %},{% endif %}{% endfor %}])">
+          <i class="fas fa-boxes-stacked"></i> Confirm Receipt &amp; Update Stock
+        </button>
+        {% else %}
+        <button class="btn-receive" disabled style="background:#94a3b8;cursor:not-allowed;">
+          <i class="fas fa-circle-check"></i> Fully Received
+        </button>
+        {% endif %}
+        <button class="btn-delete" onclick="deletePO({{ po.id }})">
+          <i class="fas fa-trash"></i> Delete
+        </button>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+
+  {% endif %}
+</div>
+
+<script>
+function toggleCard(id) {
+  const body  = document.getElementById('body-' + id);
+  const chev  = document.getElementById('chev-' + id);
+  const open  = body.style.display === 'block';
+  body.style.display = open ? 'none' : 'block';
+  chev.style.transform = open ? '' : 'rotate(180deg)';
+}
+
+async function receiveOrder(poId, itemIds) {
+  const items = itemIds.map(id => ({
+    item_id: id,
+    received_qty: parseInt(document.getElementById('recv-' + id)?.value) || 0
+  }));
+
+  const btn = document.getElementById('recv-btn-' + poId);
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Updating stock...';
+
+  try {
+    const res  = await fetch('/api/receive_order/' + poId, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ items })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      // Show success then reload to reflect updated statuses
+      btn.innerHTML = '<i class="fas fa-check"></i> Stock Updated!';
+      btn.style.background = '#0d9488';
+      setTimeout(() => location.reload(), 1000);
+    } else {
+      alert('Error: ' + (data.error || 'Unknown'));
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-boxes-stacked"></i> Confirm Receipt & Update Stock';
+    }
+  } catch(e) {
+    alert('Network error: ' + e.message);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-boxes-stacked"></i> Confirm Receipt & Update Stock';
+  }
+}
+
+async function deletePO(poId) {
+  if (!confirm('Delete this purchase order? This cannot be undone.')) return;
+  const res  = await fetch('/api/delete_purchase_order/' + poId, { method:'POST' });
+  const data = await res.json();
+  if (data.ok) {
+    const card = document.getElementById('po-card-' + poId);
+    card.style.transition = 'opacity .3s';
+    card.style.opacity = '0';
+    setTimeout(() => card.remove(), 300);
+  }
+}
+
+// Auto-open the first pending order
+document.addEventListener('DOMContentLoaded', () => {
+  const first = document.querySelector('.po-card');
+  if (first) {
+    const id = first.id.replace('po-card-', '');
+    toggleCard(id);
+  }
+});
+</script>
+{% endblock %}
+"""
+
 # --- 7. ASSIGN DICTLOADER TO JINJA WORKFLOW ---
 app.jinja_loader = DictLoader(TEMPLATES)
 
@@ -4714,6 +5094,12 @@ with app.app_context():
             conn.commit()
     except Exception:
         pass  # Column already exists or DB doesn't support IF NOT EXISTS — safe to ignore
+
+    # Ensure new PurchaseOrder tables exist (safe to run multiple times)
+    try:
+        db.create_all()
+    except Exception:
+        pass
 
 # --- 9. LOCAL DEV SERVER ---
 if __name__ == '__main__':
