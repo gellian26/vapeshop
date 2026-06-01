@@ -5084,6 +5084,9 @@ with app.app_context():
         created_at TIMESTAMP DEFAULT NOW(),
         status VARCHAR(20) DEFAULT 'pending'
     )""")
+    _run_sql("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS po_number VARCHAR(30)")
+    _run_sql("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()")
+    _run_sql("ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending'")
     _run_sql("""CREATE TABLE IF NOT EXISTS purchase_order_item (
         id SERIAL PRIMARY KEY,
         po_id INTEGER NOT NULL REFERENCES purchase_order(id) ON DELETE CASCADE,
